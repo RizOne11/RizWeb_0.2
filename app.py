@@ -54,7 +54,7 @@ def get_job(job_id):
     return None
 
 
-def worker(job_id, input_path, limit, selected_markets):
+def worker(job_id, input_path, limit, selected_markets, supplier):
     def log(message):
         print(f"[PRICEINTEL {job_id}] {message}", flush=True)
     job_dir = JOBS_DIR / job_id
@@ -81,6 +81,7 @@ def worker(job_id, input_path, limit, selected_markets):
             progress_cb=progress,
             log_cb=log,
             cancel_cb=cancel_requested,
+            supplier=supplier,
         )
         if summary.get("canceled"):
             set_job(job_id, status="canceled", message="Аналіз зупинено користувачем",
@@ -109,6 +110,11 @@ def analyze():
     if not allowed_file(f.filename):
         return render_template("error.html", message="Поки підтримується CSV."), 400
 
+    supplier = (request.form.get("supplier") or "").strip()
+    if not supplier:
+        # Safe fallback for older forms / direct requests.
+        supplier = Path(f.filename).stem or "Не вказано"
+
     raw_limit = (request.form.get("limit") or "30").strip()
     try:
         limit = int(raw_limit)
@@ -130,9 +136,9 @@ def analyze():
 
     set_job(job_id, id=job_id, status="queued", percent=0, current=0, total=0,
             message="Задача поставлена в чергу", filename=filename,
-            marketplaces=selected, limit=limit, created_at=time.time())
+            supplier=supplier, marketplaces=selected, limit=limit, created_at=time.time())
 
-    t = threading.Thread(target=worker, args=(job_id, input_path, limit, selected), daemon=True)
+    t = threading.Thread(target=worker, args=(job_id, input_path, limit, selected, supplier), daemon=True)
     t.start()
     return render_template("job.html", job_id=job_id)
 
@@ -190,7 +196,7 @@ def download_offers(job_id):
     if not job or job.get("status") not in {"done", "canceled"}: abort(404)
     p = Path(job["offers_file"])
     if not p.exists():
-        p.write_text("Код товара;Артикул;Маркетплейс;Название конкурента;Цена конкурента;Match %;URL\n", encoding="utf-8-sig")
+        p.write_text("Код товара;Категория;Постачальник;Артикул;Маркетплейс;Название конкурента;Цена конкурента;Источник цены;Match %;URL\n", encoding="utf-8-sig")
     return send_file(p, as_attachment=True, download_name="market_analysis_offers.csv")
 
 

@@ -16,7 +16,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
-                 progress_cb=None, log_cb=None, cancel_cb=None):
+                 progress_cb=None, log_cb=None, cancel_cb=None, supplier=""):
     log = log_cb or (lambda msg: None)
     cfg = json.loads((BASE / "config.json").read_text(encoding="utf-8"))
     selected = set(marketplaces or [m["name"] for m in cfg["marketplaces"]])
@@ -58,7 +58,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
         q = build_query(row)
         log("=" * 72)
         log(f"PRODUCT {i}/{len(rows)}: {product_name}")
-        log(f"SKU={row.get('Артикул','')} BRAND={row.get('Производитель','')} PRICE={row.get('Цена')}")
+        log(f"SKU={row.get('Артикул','')} BRAND={row.get('Производитель','')} PRICE={row.get('Цена')} CATEGORY={row.get('Категория','')} SUPPLIER={supplier}")
         log(f"QUERY: {q}")
         if progress_cb:
             progress_cb(i - 1, len(rows), product_name, f"Пошук: {product_name}")
@@ -163,6 +163,8 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                 accepted.append(final_prod)
                 offer_rows.append({
                     "Код товара": row["Код товара"],
+                    "Категория": row.get("Категория", ""),
+                    "Постачальник": supplier,
                     "Артикул": row["Артикул"],
                     "Маркетплейс": mp["name"],
                     "Название конкурента": final_prod["title"],
@@ -177,9 +179,22 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                 break
 
         st = stats(accepted, row.get("Цена"))
-        log(f"PRODUCT RESULT: accepted={len(accepted)} min={st['min_price']} median={st['median']} score={st['price_score']} verdict={st['verdict']}")
+
+        own_price = row.get("Цена")
+        market_reserve_uah = None
+        market_reserve_pct = None
+        if st["median"] is not None and own_price not in (None, "", 0):
+            try:
+                own_price_num = float(own_price)
+                market_reserve_uah = round(float(st["median"]) - own_price_num, 2)
+                market_reserve_pct = round((market_reserve_uah / own_price_num) * 100, 2) if own_price_num else None
+            except (TypeError, ValueError):
+                pass
+
+        log(f"PRODUCT RESULT: accepted={len(accepted)} min={st['min_price']} median={st['median']} reserve={market_reserve_uah} reserve_pct={market_reserve_pct} score={st['price_score']} verdict={st['verdict']}")
         results.append({
             **row,
+            "Постачальник": supplier,
             "Поисковый запрос": q,
             "Мин. рынка": st["min_price"],
             "Медиана рынка": st["median"],
@@ -187,6 +202,8 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
             "Макс. рынка": st["max_price"],
             "Предложений": st["offers_count"],
             "Разница с медианой %": round(st["delta_median_pct"], 2) if st["delta_median_pct"] is not None else None,
+            "Запас до рынка, грн": market_reserve_uah,
+            "Запас до рынка, %": market_reserve_pct,
             "Price Score": st["price_score"],
             "Вердикт": st["verdict"],
         })
@@ -204,7 +221,8 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
         Path(output_csv).write_text("", encoding="utf-8-sig")
 
     offer_fields = [
-        "Код товара", "Артикул", "Маркетплейс", "Название конкурента",
+        "Код товара", "Категория", "Постачальник", "Артикул",
+        "Маркетплейс", "Название конкурента",
         "Цена конкурента", "Источник цены", "Match %", "URL",
     ]
     if offer_rows:

@@ -9,7 +9,7 @@
 <body>
 <main class="wrap">
   <section class="hero">
-    <div class="badge">PRICE INTELLIGENCE • MVP v0.3 • SERPER.3 DEBUG</div>
+    <div class="badge">PRICE INTELLIGENCE • MVP v0.4.2 • MARKET RESERVE</div>
     <h1>Знайди товари, на які варто лити рекламу.</h1>
     <p>Завантаж CSV постачальника. PriceIntel порівняє твою ціну з ринком, відфільтрує схожі товари та поставить Price Score.</p>
   </section>
@@ -24,6 +24,9 @@
       </label>
 
       <div class="grid">
+        <label>Постачальник
+          <input name="supplier" type="text" placeholder="Напр. ERC, Brain, Юг-Контракт" required>
+        </label>
         <label>Скільки товарів аналізувати зараз?
           <input name="limit" type="number" value="5" min="1" max="5000">
         </label>

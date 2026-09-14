@@ -31,3 +31,14 @@
 
 ## Ліміти
 Безкоштовні 2,500 Serper queries ≈ до 2,500 товарів у цій архітектурі (по одному search-запиту на товар), не рахуючи повторних запусків.
+
+
+## v0.4.1
+- Added supplier field to upload form.
+- Category + supplier are included in browser preview, main CSV and competitor offers CSV.
+
+## v0.4.2
+- Added `Запас до рынка, грн` = market median minus supplier/own price.
+- Added `Запас до рынка, %` = reserve divided by own price.
+- Both fields are included in the browser report and main CSV.
+- Positive value means the market median is above your price; negative means your price is above the median.
