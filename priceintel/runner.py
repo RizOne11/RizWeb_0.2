@@ -2,6 +2,8 @@ import json
 import time
 import re
 import statistics
+import concurrent.futures
+import os
 from pathlib import Path
 import requests
 
@@ -160,8 +162,116 @@ def _merge_grouped_hits(target, incoming, domains, limit_per_domain, other_limit
     return target
 
 
+
+def _load_checkpoint(path, log):
+    if not path:
+        return None
+    p = Path(path)
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        log(
+            f"RESUME CHECKPOINT: next_index={data.get('next_index', 0)} "
+            f"results={len(data.get('results') or [])} offers={len(data.get('offer_rows') or [])}"
+        )
+        return data
+    except Exception as e:
+        log(f"CHECKPOINT READ ERROR {type(e).__name__}: {e}")
+        return None
+
+
+def _save_checkpoint(path, next_index, results, offer_rows, log):
+    if not path:
+        return
+    p = Path(path)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        payload = {
+            "version": "v0.9.0",
+            "next_index": int(next_index),
+            "results": results,
+            "offer_rows": offer_rows,
+            "saved_at": time.time(),
+        }
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, p)
+        log(f"CHECKPOINT SAVED: next_index={next_index}")
+    except Exception as e:
+        log(f"CHECKPOINT WRITE ERROR {type(e).__name__}: {e}")
+
+
+def _prefetch_pages(grouped_hits, cache, cfg, headers, log, cancel_cb=None):
+    """Fetch uncached candidate pages concurrently, then let normal parsing use cache."""
+    urls = []
+    seen = set()
+    for hits in grouped_hits.values():
+        for hit in hits:
+            url = hit.get("url")
+            if url and url not in seen:
+                seen.add(url)
+                if cache.get(url, cfg.get("page_cache_seconds", 86400)) is None:
+                    urls.append(url)
+
+    if not urls:
+        log("PREFETCH: all candidate pages already cached")
+        return
+
+    workers = max(1, int(cfg.get("page_fetch_workers", 6)))
+    timeout = max(3.0, float(cfg.get("request_timeout_seconds", 12)))
+    delay = max(0.0, float(cfg.get("request_delay_seconds", 0.0)))
+    log(f"PREFETCH: urls={len(urls)} workers={workers} timeout={timeout:g}s")
+
+    def fetch_one(url):
+        if cancel_cb and cancel_cb():
+            return url, "canceled", None
+        try:
+            if delay:
+                time.sleep(delay)
+            rr = requests.get(
+                url,
+                headers=headers,
+                timeout=timeout,
+                allow_redirects=True,
+            )
+            if rr.status_code >= 400:
+                return url, f"http_{rr.status_code}", None
+            html = rr.text
+            low = html[:5000].lower()
+            if any(x in low for x in ["captcha", "verify you are human", "access denied", "cloudflare"]):
+                return url, "possible_block", html
+            return url, "ok", html
+        except Exception as e:
+            return url, f"{type(e).__name__}", None
+
+    ok = 0
+    failed = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = {ex.submit(fetch_one, url): url for url in urls}
+        for fut in concurrent.futures.as_completed(futures):
+            if cancel_cb and cancel_cb():
+                for pending in futures:
+                    pending.cancel()
+                break
+            url, status, html = fut.result()
+            if html:
+                try:
+                    cache.put(url, html)
+                    ok += 1
+                except Exception as e:
+                    failed += 1
+                    log(f"PREFETCH CACHE ERROR {type(e).__name__}: {e}")
+            else:
+                failed += 1
+            log(f"PREFETCH RESULT: {status} | {url[:140]}")
+    log(f"PREFETCH DONE: cached={ok} failed={failed}")
+
+
 def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
-                 progress_cb=None, log_cb=None, cancel_cb=None, supplier=""):
+                 progress_cb=None, log_cb=None, cancel_cb=None, supplier="", checkpoint_path=None):
     log = log_cb or (lambda msg: None)
     cfg = json.loads((BASE / "config.json").read_text(encoding="utf-8"))
     selected = set(marketplaces or [m["name"] for m in cfg["marketplaces"]])
@@ -170,7 +280,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
     if limit:
         rows = rows[:limit]
 
-    log(f"ENGINE v0.8.3 | START products={len(rows)} marketplaces={[m['name'] for m in market_cfg]}")
+    log(f"ENGINE v0.9.0 | START products={len(rows)} marketplaces={[m['name'] for m in market_cfg]}")
 
     # Global cache reused by all jobs on the same Render instance.
     cache = Cache(str(DATA_DIR / "priceintel_global_cache.sqlite"))
@@ -190,10 +300,20 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     })
 
-    results, offer_rows = [], []
+    checkpoint = _load_checkpoint(checkpoint_path, log)
+    if checkpoint:
+        results = list(checkpoint.get("results") or [])
+        offer_rows = list(checkpoint.get("offer_rows") or [])
+        start_index = max(0, min(int(checkpoint.get("next_index") or 0), len(rows)))
+    else:
+        results, offer_rows = [], []
+        start_index = 0
     canceled = False
 
-    for i, row in enumerate(rows, 1):
+    if start_index:
+        log(f"RESUME: continuing from product {start_index + 1}/{len(rows)}")
+
+    for i, row in enumerate(rows[start_index:], start_index + 1):
         if cancel_cb and cancel_cb():
             canceled = True
             log(f"CANCEL requested before product {i}/{len(rows)}")
@@ -256,6 +376,16 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                 log(f"SERPER STAGE {stage} ERROR {type(e).__name__}: {e}")
 
 
+        # v0.9 PERFORMANCE: fetch candidate pages in parallel into the shared cache.
+        _prefetch_pages(
+            grouped_hits,
+            cache,
+            cfg,
+            dict(sess.headers),
+            log,
+            cancel_cb=cancel_cb,
+        )
+
         for mp in market_cfg:
             if cancel_cb and cancel_cb():
                 canceled = True
@@ -286,7 +416,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                 if html is None:
                     try:
                         time.sleep(cfg["request_delay_seconds"])
-                        rr = sess.get(url, timeout=25, allow_redirects=True)
+                        rr = sess.get(url, timeout=float(cfg.get("request_timeout_seconds", 12)), allow_redirects=True)
                         log(f"  FETCH: HTTP {rr.status_code} final={rr.url} len={len(rr.text)}")
                         if rr.status_code >= 400:
                             blocked = True
@@ -423,7 +553,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
             if html is None:
                 try:
                     time.sleep(cfg["request_delay_seconds"])
-                    rr = sess.get(url, timeout=25, allow_redirects=True)
+                    rr = sess.get(url, timeout=float(cfg.get("request_timeout_seconds", 12)), allow_redirects=True)
                     log(f"  OTHER FETCH: HTTP {rr.status_code} final={rr.url} len={len(rr.text)}")
                     if rr.status_code >= 400:
                         blocked = True
@@ -633,11 +763,22 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
         })
         results.append(report_row)
 
+        # Persist only completed products. If the worker/browser dies, resume starts here.
+        if not canceled:
+            _save_checkpoint(checkpoint_path, i, results, offer_rows, log)
+
         if progress_cb:
             progress_cb(i, len(rows), product_name, f"Оброблено {i} з {len(rows)}")
 
         if canceled:
             break
+
+    if not canceled and checkpoint_path:
+        try:
+            Path(checkpoint_path).unlink(missing_ok=True)
+            log("CHECKPOINT CLEARED: analysis completed")
+        except Exception as e:
+            log(f"CHECKPOINT CLEAR ERROR {type(e).__name__}: {e}")
 
     verdict_order = {
         "🔥 РЕКЛАМУВАТИ": 0,

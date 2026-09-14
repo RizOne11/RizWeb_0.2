@@ -34,7 +34,7 @@
     }
   ],
   "max_results_per_marketplace": 5,
-  "request_delay_seconds": 1.0,
+  "request_delay_seconds": 0.25,
   "match_threshold": 72,
   "currency": "UAH",
   "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
@@ -54,5 +54,7 @@
   "other_ua_shops_max_hits": 12,
   "serper_usd_per_1000": 1.0,
   "serper_forecast_requests_per_product": 1.7,
-  "market_overprice_red_pct": 10.0
+  "market_overprice_red_pct": 10.0,
+  "page_fetch_workers": 6,
+  "request_timeout_seconds": 12
 }

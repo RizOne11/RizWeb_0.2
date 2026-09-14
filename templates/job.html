@@ -1,11 +1,35 @@
 <!doctype html><html lang="uk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PriceIntel — аналіз</title><link rel="stylesheet" href="/static/app.css"></head><body><main class="wrap"><section class="card job"><div class="badge">АНАЛІЗ РИНКУ</div><h1>Залізяка пішла працювати 😎</h1><p id="message">Готуємо задачу…</p><div class="bar"><div id="bar"></div></div><div class="progress-row"><b id="pct">0%</b><span id="counter">0 / 0</span></div><p class="muted" id="product"></p>
 <div class="actions" id="runningActions"><button id="stopBtn" class="secondary" type="button">⛔ Зупинити аналіз</button></div>
+<div class="actions hidden" id="resumeActions"><button id="resumeBtn" class="primary" type="button">▶ Продовжити з checkpoint</button></div>
 <div id="done" class="done hidden"><div id="summary" class="summary"></div><div class="actions"><a id="preview" class="primary link">Переглянути результати</a><a id="results" class="secondary link">⬇ Основний CSV</a><a id="offers" class="secondary link">⬇ Пропозиції конкурентів</a></div></div><div id="error" class="error hidden"></div></section></main>
 <script>
 const id="{{job_id}}";
 const stopBtn=document.getElementById('stopBtn');
+const resumeBtn=document.getElementById('resumeBtn');
 stopBtn.addEventListener('click',async()=>{stopBtn.disabled=true;stopBtn.textContent='Зупиняємо…';await fetch(`/api/jobs/${id}/cancel`,{method:'POST'});});
-async function tick(){const r=await fetch(`/api/jobs/${id}`);if(!r.ok)return;const j=await r.json();document.getElementById('message').textContent=j.message||'';document.getElementById('pct').textContent=(j.percent||0)+'%';document.getElementById('bar').style.width=(j.percent||0)+'%';document.getElementById('counter').textContent=`${j.current||0} / ${j.total||0}`;document.getElementById('product').textContent=j.current_product||'';
-if(j.status==='done'||j.status==='canceled'){const s=j.summary||{};document.getElementById('runningActions').classList.add('hidden');document.getElementById('summary').innerHTML=`<b>${j.status==='canceled'?'Зупинено':'Готово'}:</b> ${s.products||0} товарів, ${s.offers||0} конкурентних пропозицій. Serper API: ${s.serper_api_requests||0}, кеш: ${s.serper_cache_hits||0}, вартість: <b>$${Number(s.serper_cost_usd||0).toFixed(4)}</b>, API/товар: ${s.api_per_product||0}.`;if(j.results_url){document.getElementById('preview').href=j.preview_url;document.getElementById('results').href=j.results_url;document.getElementById('offers').href=j.offers_url;}document.getElementById('done').classList.remove('hidden');return;}
-if(j.status==='error'){document.getElementById('runningActions').classList.add('hidden');const e=document.getElementById('error');e.textContent='Помилка: '+j.message;e.classList.remove('hidden');return;}setTimeout(tick,1500)}tick();
+resumeBtn.addEventListener('click',async()=>{resumeBtn.disabled=true;resumeBtn.textContent='Відновлюємо…';const r=await fetch(`/api/jobs/${id}/resume`,{method:'POST'});if(r.ok){location.reload();}else{resumeBtn.disabled=false;resumeBtn.textContent='▶ Продовжити з checkpoint';}});
+async function tick(){
+  const r=await fetch(`/api/jobs/${id}`,{cache:'no-store'});if(!r.ok){setTimeout(tick,2000);return;}
+  const j=await r.json();
+  document.getElementById('message').textContent=j.message||'';
+  document.getElementById('pct').textContent=(j.percent||0)+'%';
+  document.getElementById('bar').style.width=(j.percent||0)+'%';
+  document.getElementById('counter').textContent=`${j.current||0} / ${j.total||0}`;
+  document.getElementById('product').textContent=j.current_product||'';
+  const running=(j.status==='queued'||j.status==='running');
+  document.getElementById('runningActions').classList.toggle('hidden',!running);
+  document.getElementById('resumeActions').classList.toggle('hidden',!(j.resume_available && ['error','canceled','interrupted'].includes(j.status)));
+  if(j.status==='done'||j.status==='canceled'){
+    const s=j.summary||{};
+    document.getElementById('summary').innerHTML=`<b>${j.status==='canceled'?'Зупинено':'Готово'}:</b> ${s.products||0} товарів, ${s.offers||0} конкурентних пропозицій. Serper API: ${s.serper_api_requests||0}, кеш: ${s.serper_cache_hits||0}, вартість: <b>$${Number(s.serper_cost_usd||0).toFixed(4)}</b>, API/товар: ${s.api_per_product||0}.`;
+    if(j.results_url){document.getElementById('preview').href=j.preview_url;document.getElementById('results').href=j.results_url;document.getElementById('offers').href=j.offers_url;}
+    document.getElementById('done').classList.remove('hidden');
+    if(j.status==='done') return;
+  }
+  if(j.status==='error'||j.status==='interrupted'){
+    const e=document.getElementById('error');e.textContent=(j.status==='interrupted'?'Процес був перерваний. ':'Помилка: ')+(j.message||'');e.classList.remove('hidden');
+  }
+  setTimeout(tick,1500)
+}
+tick();
 </script></body></html>
