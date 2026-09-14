@@ -926,8 +926,15 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
         "Код товара", "Категория", "Постачальник", "Артикул",
         "Маркетплейс", "Магазин", "Название конкурента",
         "Цена конкурента", "Источник цены", "Статус цены",
-        "Причина проверки", "Match %", "URL", "PriceIntel", "Автор",
+        "Причина проверки", "Match %", "Match статус", "Match причина",
+        "URL", "PriceIntel", "Автор",
     ]
+    # v1.2.1 safety guard: if Deep Scan adds another audit field later,
+    # do not crash after a completed analysis. Preserve it in the CSV instead.
+    for offer in offer_rows:
+        for key in offer.keys():
+            if key not in offer_fields:
+                offer_fields.append(key)
     if offer_rows:
         write_csv(offers_csv, offer_rows, offer_fields)
     else:
