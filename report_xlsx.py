@@ -57,10 +57,10 @@ def build_xlsx(csv_path, xlsx_path):
 
     number_cols = {
         "Твоя ціна", "MIN", "Медіана", "Середня", "MAX",
-        "Пропозицій", "Найдено продавців", "= моїй ціні", "Підозрілих цін",
+        "Пропозицій", "Пропозицій інших магазинів", "Найдено продавців", "= моїй ціні", "Підозрілих цін",
         "Запас, грн", "Score"
     }
-    market_cols = {"Rozetka", "Prom", "Epicentr", "Allo", "Foxtrot", "Comfy", "Kasta", "Hotline"}
+    market_cols = {"Rozetka", "Prom", "Epicentr", "Allo", "Foxtrot", "Comfy", "Kasta", "Hotline", "Інші магазини", "Магазини"}
 
     for r_idx, row in enumerate(rows, start=1):
         for c_idx, h in enumerate(headers):
@@ -96,6 +96,7 @@ def build_xlsx(csv_path, xlsx_path):
         "Середня": 12, "MAX": 12, "Пропозицій": 12,
         "Rozetka": 20, "Prom": 24, "Epicentr": 20, "Allo": 20,
         "Foxtrot": 20, "Comfy": 20, "Kasta": 20, "Hotline": 24,
+        "Інші магазини": 28, "Магазини": 48, "Пропозицій інших магазинів": 20,
         "Найдено продавців": 16, "= моїй ціні": 13, "Достовірність": 16,
         "Підозрілих цін": 15, "Запас, грн": 13, "Запас, %": 12,
         "Score": 10,

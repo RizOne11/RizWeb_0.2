@@ -71,7 +71,7 @@ class SerperSearch:
         return identifier.strip('\'"“”`') or q
 
     def _cache_key(self, simple_query, domains):
-        return "serper:v061:" + simple_query.lower() + ":" + ",".join(sorted(d.lower() for d in domains))
+        return "serper:v070:" + simple_query.lower() + ":" + ",".join(sorted(d.lower() for d in domains))
 
     def _request(self, simple_query, domains):
         cache_key = self._cache_key(simple_query, domains)
@@ -132,15 +132,19 @@ class SerperSearch:
         self.log(f"SERPER RESULTS: organic={len(organic)} shopping={len(shopping)}")
 
         grouped = {d: [] for d in domains}
+        grouped["__other__"] = []
         seen = set()
+        other_seen = set()
+        excluded_other_hosts = {
+            "facebook.com", "instagram.com", "youtube.com", "youtu.be",
+            "tiktok.com", "pinterest.com", "linkedin.com", "wikipedia.org",
+        }
 
         for source, items in (("organic", organic), ("shopping", shopping)):
             for item in items:
                 url = item.get("link") or ""
                 domain = self._market_domain(url, domains)
-                if not domain or not url or url in seen:
-                    continue
-                if len(grouped[domain]) >= limit_per_domain:
+                if not url:
                     continue
 
                 title = item.get("title") or ""
@@ -151,18 +155,38 @@ class SerperSearch:
                     or _price_from_text(snippet)
                     or _price_from_text(title)
                 )
-
-                seen.add(url)
-                grouped[domain].append({
+                hit = {
                     "title": title,
                     "url": url,
                     "snippet": snippet,
                     "position": item.get("position"),
                     "source": source,
                     "price_hint": price_hint,
-                })
+                }
 
-        total_selected = sum(len(v) for v in grouped.values())
+                if domain:
+                    if url in seen or len(grouped[domain]) >= limit_per_domain:
+                        continue
+                    seen.add(url)
+                    grouped[domain].append(hit)
+                    continue
+
+                # v0.7: keep Ukrainian non-target shops from the same Serper response.
+                try:
+                    host = urllib.parse.urlparse(url).netloc.lower().split(":")[0]
+                except Exception:
+                    host = ""
+                if host.startswith("www."):
+                    host = host[4:]
+                is_ua = host.endswith(".ua")
+                blocked_host = any(host == x or host.endswith("." + x) for x in excluded_other_hosts)
+                if is_ua and not blocked_host and url not in other_seen:
+                    other_seen.add(url)
+                    hit["host"] = host
+                    grouped["__other__"].append(hit)
+
+        total_selected = sum(len(grouped[d]) for d in domains)
+        self.log(f"SERPER OTHER UA HITS: {len(grouped['__other__'])}")
         self.log(f"SERPER MARKETPLACE HITS TOTAL: {total_selected}")
         for domain in domains:
             self.log(f"SERPER {domain}: {len(grouped[domain])} hit(s)")

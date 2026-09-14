@@ -66,6 +66,17 @@ def _merge_grouped_hits(target, incoming, domains, limit_per_domain):
             seen.add(url)
             if len(current) >= limit_per_domain:
                 break
+
+    other_current = target.setdefault("__other__", [])
+    other_seen = {x.get("url") for x in other_current if x.get("url")}
+    for hit in incoming.get("__other__", []):
+        url = hit.get("url")
+        if not url or url in other_seen:
+            continue
+        other_current.append(hit)
+        other_seen.add(url)
+        if len(other_current) >= 20:
+            break
     return target
 
 
@@ -119,9 +130,12 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
 
         accepted = []
         suspicious_prices = []
+        accepted_other = []
+        suspicious_other = []
         domains = [m["domain"] for m in market_cfg]
 
         grouped_hits = {d: [] for d in domains}
+        grouped_hits["__other__"] = []
         cascade_queries = _cascade_queries(
             row, q, max_queries=cfg.get("cascade_max_queries", 3)
         )
@@ -135,7 +149,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                 log("CASCADE STOP: disabled in config")
                 break
 
-            current_hits = sum(len(v) for v in grouped_hits.values())
+            current_hits = sum(len(grouped_hits.get(d, [])) for d in domains)
             if stage > 1 and current_hits >= min_hits:
                 log(f"CASCADE STOP: already have {current_hits} unique marketplace hit(s)")
                 break
@@ -154,8 +168,9 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                     domains,
                     cfg["max_results_per_marketplace"],
                 )
-                total_unique = sum(len(v) for v in grouped_hits.values())
-                log(f"SEARCH STAGE {stage} RESULT: total_unique_hits={total_unique}")
+                total_unique = sum(len(grouped_hits.get(d, [])) for d in domains)
+                other_unique = len(grouped_hits.get("__other__", []))
+                log(f"SEARCH STAGE {stage} RESULT: target_hits={total_unique} other_ua_hits={other_unique}")
             except Exception as e:
                 log(f"SERPER STAGE {stage} ERROR {type(e).__name__}: {e}")
 
@@ -279,6 +294,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                     "Постачальник": supplier,
                     "Артикул": row["Артикул"],
                     "Маркетплейс": mp["name"],
+                    "Магазин": "",
                     "Название конкурента": final_prod["title"],
                     "Цена конкурента": final_prod["price"],
                     "Источник цены": price_source,
@@ -301,6 +317,116 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
 
             if canceled:
                 break
+
+        # v0.7: analyze Ukrainian shops found in the SAME Serper responses.
+        # These prices are shown separately and DO NOT affect marketplace statistics,
+        # score or verdict until we validate the new source on real data.
+        other_hits = grouped_hits.get("__other__", [])
+        log(f"OTHER UA SHOPS: hits={len(other_hits)}")
+        for n, hit in enumerate(other_hits, 1):
+            if cancel_cb and cancel_cb():
+                canceled = True
+                log("CANCEL requested during other-shop scan")
+                break
+
+            url = hit.get("url") or ""
+            hit_title = hit.get("title") or ""
+            host = hit.get("host") or ""
+            price_hint = hit.get("price_hint")
+            pre_match = score_match(row, hit_title, url)
+            log(f"  OTHER HIT {n}: host={host} title={hit_title[:120]} | {url}")
+
+            html = cache.get(url, cfg.get("page_cache_seconds", 86400))
+            prod = None
+            blocked = False
+            if html is None:
+                try:
+                    time.sleep(cfg["request_delay_seconds"])
+                    rr = sess.get(url, timeout=25, allow_redirects=True)
+                    log(f"  OTHER FETCH: HTTP {rr.status_code} final={rr.url} len={len(rr.text)}")
+                    if rr.status_code >= 400:
+                        blocked = True
+                    else:
+                        html = rr.text
+                        cache.put(url, html)
+                except Exception as e:
+                    log(f"  OTHER FETCH ERROR {type(e).__name__}: {e}")
+                    blocked = True
+            else:
+                log(f"  OTHER CACHE: page hit len={len(html)}")
+
+            if html:
+                try:
+                    prod = extract_product(html, url)
+                except Exception as e:
+                    log(f"  OTHER EXTRACT ERROR {type(e).__name__}: {e}")
+
+            candidate_title = (prod or {}).get("title") or hit_title
+            match = score_match(row, candidate_title, url)
+            extracted_price = (prod or {}).get("price")
+            chosen_price = extracted_price
+            price_source = "page"
+
+            if not chosen_price and price_hint and match >= cfg.get("search_price_match_threshold", 90):
+                chosen_price = price_hint
+                price_source = "serper"
+                log(f"  OTHER FALLBACK PRICE: {chosen_price} from Serper (blocked={blocked})")
+
+            if match < cfg["match_threshold"]:
+                log(f"  OTHER REJECT: match<{cfg['match_threshold']}")
+                continue
+            if not chosen_price:
+                log("  OTHER REJECT: no price")
+                continue
+
+            price_status = "ПІДТВЕРДЖЕНА"
+            price_reason = ""
+            suspicious = False
+            try:
+                own_num = float(row.get("Цена")) if row.get("Цена") not in (None, "", 0) else None
+                cand_num = float(chosen_price)
+                ratio_limit = float(cfg.get("serper_price_ratio_limit", 3.0))
+                if price_source == "serper" and own_num and cand_num > 0:
+                    ratio = max(cand_num / own_num, own_num / cand_num)
+                    if ratio > ratio_limit:
+                        suspicious = True
+                        price_status = "⚠️ ЦІНА НЕ ПІДТВЕРДЖЕНА"
+                        price_reason = f"Serper fallback differs from own price by {ratio:.2f}x (> {ratio_limit:.2f}x)"
+            except (TypeError, ValueError, ZeroDivisionError):
+                pass
+
+            final_other = {
+                "title": candidate_title,
+                "price": chosen_price,
+                "url": url,
+                "host": host,
+                "marketplace": "Інші магазини",
+                "match_score": round(match, 1),
+                "price_source": price_source,
+            }
+            offer_rows.append({
+                "Код товара": row["Код товара"],
+                "Категория": row.get("Категория", ""),
+                "Постачальник": supplier,
+                "Артикул": row["Артикул"],
+                "Маркетплейс": "Інші магазини",
+                "Магазин": host,
+                "Название конкурента": candidate_title,
+                "Цена конкурента": chosen_price,
+                "Источник цены": price_source,
+                "Статус цены": price_status,
+                "Причина проверки": price_reason,
+                "Match %": round(match, 1),
+                "URL": url,
+            })
+
+            if suspicious:
+                suspicious_other.append(final_other)
+                log(f"  OTHER SUSPICIOUS: {host} price={chosen_price} -> excluded")
+                continue
+
+            accepted_other.append(final_other)
+            log(f"  OTHER ACCEPT: {host} price={chosen_price} source={price_source} match={match:.1f}")
 
         st = stats(accepted, row.get("Цена"))
 
@@ -358,6 +484,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
 
         log(
             f"PRODUCT RESULT: accepted={len(accepted)} suspicious={len(suspicious_prices)} "
+            f"other_accepted={len(accepted_other)} other_suspicious={len(suspicious_other)} "
             f"same_price={same_price_count} min={st['min_price']} median={st['median']} "
             f"reserve={market_reserve_uah} reserve_pct={market_reserve_pct} "
             f"score={st['price_score']} verdict={st['verdict']}"
@@ -379,7 +506,19 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
         for mp in market_cfg:
             report_row[mp["name"]] = marketplace_prices.get(mp["name"], "")
 
+        other_prices = " / ".join(
+            f"{float(x['price']):.2f}".rstrip("0").rstrip(".")
+            for x in accepted_other if x.get("price") is not None
+        )
+        other_shops = " / ".join(
+            f"{x.get('host','')}: {float(x['price']):.2f}".rstrip("0").rstrip(".")
+            for x in accepted_other if x.get("price") is not None
+        )
+
         report_row.update({
+            "Інші магазини": other_prices,
+            "Магазини": other_shops,
+            "Пропозицій інших магазинів": len(accepted_other),
             "Найдено продавців": sellers_found,
             "= моїй ціні": same_price_count,
             "Достовірність": market_confidence,
@@ -418,7 +557,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
 
     offer_fields = [
         "Код товара", "Категория", "Постачальник", "Артикул",
-        "Маркетплейс", "Название конкурента",
+        "Маркетплейс", "Магазин", "Название конкурента",
         "Цена конкурента", "Источник цены", "Статус цены",
         "Причина проверки", "Match %", "URL",
     ]

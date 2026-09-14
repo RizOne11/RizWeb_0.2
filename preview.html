@@ -26,7 +26,7 @@
         <th>Артикул</th><th>Твоя ціна</th><th>MIN</th><th>Медіана</th>
         <th>Середня</th><th>MAX</th><th>Пропозицій</th>
         <th>Rozetka</th><th>Prom</th><th>Epicentr</th><th>Allo</th><th>Foxtrot</th><th>Comfy</th><th>Kasta</th><th>Hotline</th>
-        <th>Найдено продавців</th><th>= моїй ціні</th><th>Достовірність</th><th>Підозрілих цін</th><th>Запас, грн</th><th>Запас, %</th><th>Score</th>
+        <th>Інші магазини</th><th>Магазини</th><th>Пропозицій інших магазинів</th><th>Найдено продавців</th><th>= моїй ціні</th><th>Достовірність</th><th>Підозрілих цін</th><th>Запас, грн</th><th>Запас, %</th><th>Score</th>
       </tr></thead>
       <tbody>
       {% for r in rows %}
@@ -50,6 +50,9 @@
         <td class="market-prices">{{r.get('Comfy','')}}</td>
         <td class="market-prices">{{r.get('Kasta','')}}</td>
         <td class="market-prices">{{r.get('Hotline','')}}</td>
+        <td class="market-prices">{{r.get('Інші магазини','')}}</td>
+        <td class="market-prices">{{r.get('Магазини','')}}</td>
+        <td>{{r.get('Пропозицій інших магазинів','')}}</td>
         <td>{{r.get('Найдено продавців','')}}</td>
         <td><b>{{r.get('= моїй ціні','')}}</b></td>
         <td>{{r.get('Достовірність','')}}</td>

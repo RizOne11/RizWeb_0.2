@@ -65,3 +65,9 @@ Unified report schema across runner, browser preview, CSV and XLSX.
 
 ## v0.6.1
 Hotfix: explicit cascade logging, full-query Serper stages, Kasta/Hotline UI and XLSX columns.
+
+## v0.7.0 — Wide UA Market
+- Collects Ukrainian non-target shops from the same Serper responses; no extra Serper API call is required.
+- Other shops pass the same product matcher and price validation.
+- Other-shop prices are shown separately in browser/CSV/XLSX and detailed offers.
+- Other-shop prices DO NOT affect MIN/Median/Average/MAX/Score/Verdict yet.

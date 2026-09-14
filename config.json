@@ -48,5 +48,8 @@
   "cascade_search_enabled": true,
   "cascade_min_hits": 3,
   "cascade_max_queries": 3,
-  "same_price_tolerance_uah": 1.0
+  "same_price_tolerance_uah": 1.0,
+  "other_ua_shops_enabled": true,
+  "other_ua_shops_affect_score": false,
+  "other_ua_shops_max_hits": 20
 }
