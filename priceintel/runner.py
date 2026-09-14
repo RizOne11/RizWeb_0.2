@@ -365,7 +365,11 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
         min_hits = int(cfg.get("cascade_min_hits", 3))
         cascade_enabled = bool(cfg.get("cascade_search_enabled", True))
 
-        log(f"CASCADE PLAN: {cascade_queries} min_hits={min_hits} enabled={cascade_enabled}")
+        deep_scan_enabled = bool(cfg.get("deep_scan_enabled", False))
+        tier1_required = [x for x in cfg.get("tier1_required_marketplaces", []) if x in {m["name"] for m in market_cfg}]
+        tier1_status = {m["name"]: "PENDING" for m in market_cfg if m["name"] in tier1_required}
+        tier1_errors = set()
+        log(f"CASCADE PLAN: {cascade_queries} min_hits={min_hits} enabled={cascade_enabled} deep_scan={deep_scan_enabled}")
 
         for stage, search_query in enumerate(cascade_queries, 1):
             if stage > 1 and not cascade_enabled:
@@ -376,7 +380,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
             candidate_sources = _candidate_source_count(grouped_hits, domains)
             adaptive_enabled = bool(cfg.get("adaptive_search_enabled", True))
             adaptive_min_sources = int(cfg.get("adaptive_min_candidate_sources", 4))
-            if stage > 1:
+            if stage > 1 and not deep_scan_enabled:
                 if adaptive_enabled and candidate_sources >= adaptive_min_sources:
                     log(
                         f"ADAPTIVE SEARCH STOP: candidate_sources={candidate_sources} "
@@ -411,7 +415,53 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                 )
             except Exception as e:
                 log(f"SERPER STAGE {stage} ERROR {type(e).__name__}: {e}")
+                if deep_scan_enabled:
+                    tier1_errors.update(tier1_status.keys())
 
+        # v1.2 DEEP SCAN: every Tier-1 marketplace must receive a targeted
+        # recovery search when the broad cascade did not return a hit.
+        # Finding many Tier-2 shops can NEVER stop this pass.
+        if deep_scan_enabled and cfg.get("tier1_recovery_enabled", True):
+            recovery_queries = _cascade_queries(row, q, max_queries=cfg.get("tier1_recovery_max_queries", 3))
+            by_name = {m["name"]: m for m in market_cfg}
+            for mp_name in tier1_required:
+                mp = by_name[mp_name]
+                domain = mp["domain"]
+                if grouped_hits.get(domain):
+                    tier1_status[mp_name] = "FOUND_CANDIDATE"
+                    log(f"TIER1 CHECK {mp_name}: candidate already found in broad search")
+                    continue
+                log(f"TIER1 RECOVERY START: {mp_name} ({domain})")
+                had_error = False
+                for rq in recovery_queries:
+                    targeted_query = f"{rq} {domain}"
+                    try:
+                        targeted = searcher.search_all(
+                            targeted_query, [domain],
+                            limit_per_domain=cfg["max_results_per_marketplace"],
+                            exact_query=True,
+                        )
+                        # Merge only the requested Tier-1 domain. Other-UA results
+                        # from a targeted query must not masquerade as broad market discovery.
+                        _merge_grouped_hits(
+                            grouped_hits, {domain: targeted.get(domain, []), "__other__": []},
+                            domains, cfg["max_results_per_marketplace"],
+                            cfg.get("other_ua_shops_max_hits", 30),
+                        )
+                        log(f"TIER1 RECOVERY {mp_name}: query={targeted_query!r} hits={len(targeted.get(domain, []))}")
+                        if grouped_hits.get(domain):
+                            break
+                    except Exception as e:
+                        had_error = True
+                        log(f"TIER1 RECOVERY ERROR {mp_name}: {type(e).__name__}: {e}")
+                if grouped_hits.get(domain):
+                    tier1_status[mp_name] = "FOUND_CANDIDATE"
+                elif had_error:
+                    tier1_status[mp_name] = "ERROR"
+                    tier1_errors.add(mp_name)
+                else:
+                    tier1_status[mp_name] = "CHECKED_NOT_FOUND"
+                log(f"TIER1 CHECK {mp_name}: {tier1_status[mp_name]}")
 
         # v0.9 PERFORMANCE: fetch candidate pages in parallel into the shared cache.
         _prefetch_pages(
@@ -733,7 +783,13 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
 
         sellers_found = len(raw_valid_offers)
         market_sources = len(balanced_offers)
-        if market_sources >= 4:
+        tier1_checked = sum(1 for x in tier1_status.values() if x != "ERROR") if deep_scan_enabled else 0
+        tier1_found = sum(1 for mp in tier1_required if marketplace_prices.get(mp)) if deep_scan_enabled else 0
+        tier1_total = len(tier1_required) if deep_scan_enabled else 0
+        tier1_complete = (tier1_total > 0 and tier1_checked == tier1_total) if deep_scan_enabled else True
+        if deep_scan_enabled and not tier1_complete:
+            market_confidence = "⚠️ Неповна перевірка Tier 1"
+        elif market_sources >= 4:
             market_confidence = "Висока"
         elif market_sources >= 2:
             market_confidence = "Середня"
@@ -752,6 +808,10 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
             cfg=cfg,
             log=log,
         )
+        if deep_scan_enabled and cfg.get("tier1_require_complete_for_hot_verdict", True) and not tier1_complete and str(final_verdict).startswith("🔥"):
+            final_verdict = "⚠️ НЕПОВНА ПЕРЕВІРКА"
+            verdict_reason = "TIER1_INCOMPLETE"
+            log("VERDICT GUARD: HOT blocked because Tier 1 verification is incomplete")
         st["verdict"] = final_verdict
         log(f"FINAL VERDICT: {final_verdict} | reason={verdict_reason}")
 
@@ -779,9 +839,15 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
             "MAX": st["max_price"],
             "Пропозицій": sellers_found,
             "Джерел ринку": market_sources,
+            "Tier 1 перевірено": f"{tier1_checked}/{tier1_total}" if deep_scan_enabled else "",
+            "Tier 1 знайдено": f"{tier1_found}/{tier1_total}" if deep_scan_enabled else "",
+            "Tier 1 статус": " / ".join(f"{name}: {tier1_status.get(name, 'N/A')}" for name in tier1_required) if deep_scan_enabled else "",
         }
         for mp in market_cfg:
-            report_row[mp["name"]] = marketplace_prices.get(mp["name"], "")
+            value = marketplace_prices.get(mp["name"], "")
+            if deep_scan_enabled and mp["name"] in tier1_required and not value:
+                value = "ПОМИЛКА ПЕРЕВІРКИ" if tier1_status.get(mp["name"]) == "ERROR" else "НЕ ЗНАЙДЕНО"
+            report_row[mp["name"]] = value
 
         other_prices = " / ".join(
             f"{float(x['price']):.2f}".rstrip("0").rstrip(".")
