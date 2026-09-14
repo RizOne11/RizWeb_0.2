@@ -105,6 +105,27 @@ def _sku_distinctive(sku: str) -> bool:
     return len(c) >= 6 and bool(re.search(r"[a-zа-яіїєґ]", c, re.I)) and bool(re.search(r"\d", c))
 
 
+
+
+def _model_token_is_spec(token):
+    """Reject technical-spec tokens that only look like model identifiers."""
+    t = str(token or "").strip().lower()
+    c = compact(t)
+    if not c:
+        return True
+    if re.fullmatch(r"\d{3,4}[xх×]\d{3,4}", t, re.I):
+        return True
+    if re.fullmatch(r"\d+(?:\.\d+)?(?:k|hz|гц|w|вт|gb|гб|tb|тб|mah|мач|v|в)", t, re.I):
+        return True
+    if re.fullmatch(r"hdr\d+", c, re.I):
+        return True
+    if re.fullmatch(r"dci-?p3", t, re.I) or c in {"dcip3", "srgb", "adobergb", "freesync", "gsync"}:
+        return True
+    # Common certification / feature codes are not product identities.
+    if c.startswith("tuv") or c.startswith("vesa"):
+        return True
+    return False
+
 def build_fingerprint(row):
     title = str(row.get("Название") or "")
     brand = str(row.get("Производитель") or "")
@@ -115,6 +136,8 @@ def build_fingerprint(row):
     seen = set()
     for t in MODEL_RE.findall(source):
         c = compact(t)
+        if _model_token_is_spec(t):
+            continue
         if len(c) >= 4 and c != sku_c and c not in seen:
             seen.add(c)
             model_tokens.append(t)

@@ -116,6 +116,35 @@ def _embedded_product(soup):
     return None
 
 
+
+
+def availability_state(value):
+    """Normalize marketplace availability to IN_STOCK / OUT_OF_STOCK / UNKNOWN."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return "UNKNOWN"
+    compact = re.sub(r"[^a-zа-яіїєґ0-9]+", " ", text, flags=re.I)
+    out_tokens = (
+        "outofstock", "out of stock", "soldout", "sold out", "discontinued",
+        "немає в наявності", "нет в наличии", "відсутній", "отсутствует",
+        "закінчився", "закончился", "не доступен", "недоступний",
+    )
+    in_tokens = (
+        "instock", "in stock", "готово до відправки", "готов к отправке",
+        "є в наявності", "есть в наличии", "в наявності", "в наличии",
+        "available", "доступний", "доступен",
+    )
+    if any(x in text or x in compact for x in out_tokens):
+        return "OUT_OF_STOCK"
+    if any(x in text or x in compact for x in in_tokens):
+        return "IN_STOCK"
+    return "UNKNOWN"
+
+
+def is_in_stock(value, unknown_is_in_stock=False):
+    state = availability_state(value)
+    return state == "IN_STOCK" or (unknown_is_in_stock and state == "UNKNOWN")
+
 def extract_product(html: str, url: str):
     soup = BeautifulSoup(html or "", "html.parser")
     title = _meta(soup, [('meta[property="og:title"]', 'content'), ('meta[name="twitter:title"]', 'content')])
@@ -140,8 +169,13 @@ def extract_product(html: str, url: str):
         if tag:
             p = _num(tag.get(attr))
             if p:
+                availability = _meta(soup, [
+                    ('meta[property="product:availability"]', 'content'),
+                    ('meta[itemprop="availability"]', 'content'),
+                    ('link[itemprop="availability"]', 'href'),
+                ]) or ""
                 return {"title": title, "description": description, "price": p,
-                        "availability": "", "url": url, "extract_source": "meta"}
+                        "availability": availability, "url": url, "extract_source": "meta"}
 
     embedded = _embedded_product(soup)
     if embedded:
@@ -151,6 +185,17 @@ def extract_product(html: str, url: str):
                 "extract_source": "embedded_json"}
 
     text = soup.get_text(" ", strip=True)
+    availability = _meta(soup, [
+        ('meta[property="product:availability"]', 'content'),
+        ('meta[itemprop="availability"]', 'content'),
+        ('link[itemprop="availability"]', 'href'),
+    ]) or ""
+    if not availability:
+        low_text = text.lower()
+        for phrase in ("готово до відправки", "є в наявності", "в наявності", "готов к отправке", "есть в наличии", "в наличии", "немає в наявності", "нет в наличии"):
+            if phrase in low_text:
+                availability = phrase
+                break
     # Last resort only. Skip values explicitly presented as monthly installments.
     candidates = []
     for m in PRICE_RE.finditer(text):
@@ -162,6 +207,6 @@ def extract_product(html: str, url: str):
             candidates.append(p)
     if candidates:
         return {"title": title, "description": description, "price": candidates[0],
-                "availability": "", "url": url, "extract_source": "text"}
+                "availability": availability, "url": url, "extract_source": "text"}
     return {"title": title, "description": description, "price": None,
-            "availability": "", "url": url, "extract_source": "none"}
+            "availability": availability, "url": url, "extract_source": "none"}

@@ -9,8 +9,8 @@ import requests
 
 from .io import read_catalog, write_csv, discount_pct
 from .matcher import build_query, score_match, classify_match, build_fingerprint
-from .search import SerperSearch
-from .extract import extract_product
+from .search import HybridSearch
+from .extract import extract_product, availability_state
 from .cache import Cache
 from .analyze import stats
 
@@ -564,13 +564,26 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
 
     # Global cache reused by all jobs on the same Render instance.
     cache = Cache(str(DATA_DIR / "priceintel_global_cache.sqlite"))
-    searcher = SerperSearch(
+    searcher = HybridSearch(
         logger=log,
         gl=cfg.get("search_gl", "ua"),
         hl=cfg.get("search_hl", "uk"),
         num=cfg.get("serper_num_results", 50),
         cache=cache,
         cache_ttl=cfg.get("serper_cache_seconds", 259200),
+        firecrawl_enabled=cfg.get("firecrawl_search_enabled", True),
+        exa_enabled=cfg.get("exa_search_enabled", True),
+        serper_enabled=cfg.get("serper_search_enabled", True),
+        timeout=cfg.get("external_search_timeout_seconds", 45),
+        other_limit=cfg.get("other_ua_shops_max_hits", 80),
+        recovery_min_hits=cfg.get("provider_recovery_min_hits", 2),
+        firecrawl_keyless=cfg.get("firecrawl_keyless_enabled", True),
+    )
+    log(
+        "PROVIDERS: "
+        f"Firecrawl={'ON(key)' if searcher.firecrawl.api_key else ('ON(keyless)' if searcher.firecrawl.enabled else 'OFF')} | "
+        f"Exa={'ON' if searcher.exa.enabled else 'OFF(no key)'} | "
+        f"Serper={'ON' if searcher.serper.api_key else 'OFF(no key)'}"
     )
 
     sess = requests.Session()
@@ -706,6 +719,29 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                     except Exception as e:
                         log(f"  EXTRACT ERROR {type(e).__name__}: {e}")
 
+                # v1.2.5: blocked/JS pages or unknown availability go through
+                # Firecrawl structured verification. It is a fallback, not the
+                # first fetch, so we do not spend crawl credits unnecessarily.
+                availability_hint = (prod or {}).get("availability", "") or hit.get("snippet", "") or hit_title
+                availability_before = availability_state(availability_hint)
+                if prod is not None and not (prod or {}).get("availability") and availability_before != "UNKNOWN":
+                    prod["availability"] = availability_hint
+                needs_verify = (
+                    blocked
+                    or not prod
+                    or not (prod or {}).get("price")
+                    or availability_before == "UNKNOWN"
+                )
+                if needs_verify and cfg.get("firecrawl_page_verification_enabled", True):
+                    verified = searcher.verify_page(url)
+                    if verified:
+                        prod = verified
+                        url = verified.get("url") or url
+                        log(
+                            f"  FIRECRAWL VERIFIED: title={(verified.get('title') or '')[:120]!r} "
+                            f"price={verified.get('price')} availability={verified.get('availability')!r}"
+                        )
+
                 candidate_title = (prod or {}).get("title") or hit_title
                 match_info = classify_match(row, candidate_title, url, (prod or {}).get("description", ""))
                 match = float(match_info["score"])
@@ -717,7 +753,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                 # Fallback: for blocked pages or pages without a parseable price,
                 # use a Serper price hint only when product matching is strong.
                 chosen_price = extracted_price
-                price_source = "page"
+                price_source = "firecrawl" if (prod or {}).get("extract_source") == "firecrawl_json" else "page"
                 if not chosen_price and price_hint and match >= cfg.get("search_price_match_threshold", 90):
                     chosen_price = price_hint
                     price_source = "serper"
@@ -728,6 +764,12 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                     continue
                 if not chosen_price:
                     log("  REJECT: no price extracted or safe search-price hint")
+                    continue
+
+                availability = (prod or {}).get("availability", "")
+                stock_state = availability_state(availability)
+                if cfg.get("in_stock_only", True) and stock_state != "IN_STOCK":
+                    log(f"  SKIP STOCK: state={stock_state} availability={availability!r}")
                     continue
 
                 # Price Validation v1:
@@ -762,6 +804,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                     "title": candidate_title,
                     "price": chosen_price,
                     "availability": (prod or {}).get("availability", ""),
+                    "seller": (prod or {}).get("seller", ""),
                     "url": url,
                     "marketplace": mp["name"],
                     "match_score": round(match, 1),
@@ -775,7 +818,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                     "Постачальник": supplier,
                     "Артикул": row["Артикул"],
                     "Маркетплейс": mp["name"],
-                    "Магазин": "",
+                    "Магазин": final_prod.get("seller", ""),
                     "Название конкурента": final_prod["title"],
                     "Цена конкурента": final_prod["price"],
                     "Источник цены": price_source,
@@ -785,6 +828,8 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                     "Match статус": match_info["status"],
                     "Match причина": match_info["reason"],
                     "Пошуковий запит": hit.get("search_query", ""),
+                    "Провайдер пошуку": hit.get("discovery_provider", ""),
+                    "Наявність": final_prod.get("availability", ""),
                     "URL": final_prod["url"],
                     "PriceIntel": app_version,
                     "Автор": brand_author,
@@ -847,12 +892,27 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                 except Exception as e:
                     log(f"  OTHER EXTRACT ERROR {type(e).__name__}: {e}")
 
+            availability_hint = (prod or {}).get("availability", "") or hit.get("snippet", "") or hit_title
+            availability_before = availability_state(availability_hint)
+            if prod is not None and not (prod or {}).get("availability") and availability_before != "UNKNOWN":
+                prod["availability"] = availability_hint
+            needs_verify = (blocked or not prod or not (prod or {}).get("price") or availability_before == "UNKNOWN")
+            if needs_verify and cfg.get("firecrawl_page_verification_enabled", True):
+                verified = searcher.verify_page(url)
+                if verified:
+                    prod = verified
+                    url = verified.get("url") or url
+                    log(
+                        f"  OTHER FIRECRAWL VERIFIED: title={(verified.get('title') or '')[:120]!r} "
+                        f"price={verified.get('price')} availability={verified.get('availability')!r}"
+                    )
+
             candidate_title = (prod or {}).get("title") or hit_title
             match_info = classify_match(row, candidate_title, url, (prod or {}).get("description", ""))
             match = float(match_info["score"])
             extracted_price = (prod or {}).get("price")
             chosen_price = extracted_price
-            price_source = "page"
+            price_source = "firecrawl" if (prod or {}).get("extract_source") == "firecrawl_json" else "page"
 
             if not chosen_price and price_hint and match >= cfg.get("search_price_match_threshold", 90):
                 chosen_price = price_hint
@@ -864,6 +924,12 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                 continue
             if not chosen_price:
                 log("  OTHER REJECT: no price")
+                continue
+
+            availability = (prod or {}).get("availability", "")
+            stock_state = availability_state(availability)
+            if cfg.get("in_stock_only", True) and stock_state != "IN_STOCK":
+                log(f"  OTHER SKIP STOCK: state={stock_state} availability={availability!r}")
                 continue
 
             price_status = "ПІДТВЕРДЖЕНА"
@@ -890,6 +956,8 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                 "marketplace": "Інші магазини",
                 "match_score": round(match, 1),
                 "price_source": price_source,
+                "availability": (prod or {}).get("availability", ""),
+                "seller": (prod or {}).get("seller", ""),
                 "search_query": hit.get("search_query", ""),
             }
             offer_rows.append({
@@ -908,6 +976,8 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                 "Match статус": match_info["status"],
                 "Match причина": match_info["reason"],
                 "Пошуковий запит": hit.get("search_query", ""),
+                "Провайдер пошуку": hit.get("discovery_provider", ""),
+                "Наявність": final_other.get("availability", ""),
                 "URL": url,
                 "PriceIntel": app_version,
                 "Автор": brand_author,
@@ -1154,8 +1224,12 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
         counts[r["Вердикт"]] = counts.get(r["Вердикт"], 0) + 1
 
     serper_usd_per_1000 = float(cfg.get("serper_usd_per_1000", 1.0))
-    serper_cost_usd = round(searcher.api_requests * serper_usd_per_1000 / 1000.0, 4)
-    api_per_product = round(searcher.api_requests / len(results), 3) if results else 0
+    serper_requests = searcher.serper.api_requests
+    firecrawl_requests = searcher.firecrawl.api_requests
+    exa_requests = searcher.exa.api_requests
+    total_external_requests = serper_requests + firecrawl_requests + exa_requests
+    serper_cost_usd = round(serper_requests * serper_usd_per_1000 / 1000.0, 4)
+    api_per_product = round(total_external_requests / len(results), 3) if results else 0
 
     elapsed_seconds = round(
         prior_elapsed_seconds + (time.perf_counter() - run_started), 2
@@ -1173,7 +1247,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
     avg_market_sources = round(
         sum(source_values) / len(source_values), 2
     ) if source_values else 0.0
-    serper_total_lookups = searcher.api_requests + searcher.cache_hits
+    serper_total_lookups = serper_requests + searcher.cache_hits
     serper_cache_hit_pct = round(
         searcher.cache_hits / serper_total_lookups * 100.0, 1
     ) if serper_total_lookups else 0.0
@@ -1187,7 +1261,8 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
     )
     log(
         f"DONE products={len(results)} offers={len(offer_rows)} verdicts={counts} "
-        f"serper_api_requests={searcher.api_requests} serper_cache_hits={searcher.cache_hits} "
+        f"serper_api_requests={serper_requests} firecrawl_api_requests={firecrawl_requests} "
+        f"exa_api_requests={exa_requests} serper_cache_hits={searcher.cache_hits} "
         f"serper_cost_usd={serper_cost_usd:.4f} api_per_product={api_per_product} "
         f"elapsed_seconds={elapsed_seconds:.2f} canceled={canceled}"
     )
@@ -1197,7 +1272,10 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
         "products": len(results),
         "offers": len(offer_rows),
         "verdicts": counts,
-        "serper_api_requests": searcher.api_requests,
+        "serper_api_requests": serper_requests,
+        "firecrawl_api_requests": firecrawl_requests,
+        "exa_api_requests": exa_requests,
+        "external_api_requests": total_external_requests,
         "serper_cache_hits": searcher.cache_hits,
         "serper_cache_hit_pct": serper_cache_hit_pct,
         "serper_cost_usd": serper_cost_usd,
