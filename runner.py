@@ -1,5 +1,6 @@
 import json
 import time
+import re
 from pathlib import Path
 import requests
 
@@ -13,6 +14,59 @@ from .analyze import stats
 BASE = Path(__file__).resolve().parents[1]
 DATA_DIR = BASE / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _clean_title_for_search(title, brand="", max_words=8):
+    text = str(title or "")
+    # Remove bracketed supplier/model duplicates and noisy punctuation.
+    text = re.sub(r"\([^)]{0,80}\)", " ", text)
+    text = re.sub(r"\[[^]]{0,80}\]", " ", text)
+    text = re.sub(r"[^0-9A-Za-zА-Яа-яІіЇїЄєҐґ+._-]+", " ", text)
+    words = [w for w in text.split() if len(w) > 1]
+    # Avoid duplicating brand if it is already in the title.
+    result = " ".join(words[:max_words]).strip()
+    return result
+
+
+def _cascade_queries(row, primary_query, max_queries=3):
+    sku = str(row.get("Артикул") or "").strip()
+    brand = str(row.get("Производитель") or "").strip()
+    title = _clean_title_for_search(row.get("Название") or "")
+    queries = []
+
+    def add(q):
+        q = " ".join(str(q or "").split()).strip()
+        if q and q.lower() not in {x.lower() for x in queries}:
+            queries.append(q)
+
+    # Stage 1: identifier only — cheapest and most precise.
+    add(sku or primary_query)
+    # Stage 2: brand + SKU/model.
+    if brand and sku:
+        add(f"{brand} {sku}")
+    # Stage 3: brand/title or clean title.
+    if title:
+        if brand and brand.lower() not in title.lower():
+            add(f"{brand} {title}")
+        else:
+            add(title)
+
+    return queries[:max(1, int(max_queries))]
+
+
+def _merge_grouped_hits(target, incoming, domains, limit_per_domain):
+    for domain in domains:
+        current = target.setdefault(domain, [])
+        seen = {x.get("url") for x in current}
+        for hit in incoming.get(domain, []):
+            url = hit.get("url")
+            if not url or url in seen:
+                continue
+            current.append(hit)
+            seen.add(url)
+            if len(current) >= limit_per_domain:
+                break
+    return target
 
 
 def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
@@ -67,15 +121,38 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
         suspicious_prices = []
         domains = [m["domain"] for m in market_cfg]
 
-        try:
-            grouped_hits = searcher.search_all(
-                q,
-                domains,
-                limit_per_domain=cfg["max_results_per_marketplace"],
-            )
-        except Exception as e:
-            log(f"SERPER FATAL {type(e).__name__}: {e}")
-            grouped_hits = {d: [] for d in domains}
+        grouped_hits = {d: [] for d in domains}
+        cascade_queries = _cascade_queries(
+            row, q, max_queries=cfg.get("cascade_max_queries", 3)
+        )
+        min_hits = int(cfg.get("cascade_min_hits", 3))
+        cascade_enabled = bool(cfg.get("cascade_search_enabled", True))
+
+        for stage, search_query in enumerate(cascade_queries, 1):
+            if stage > 1 and not cascade_enabled:
+                break
+            current_hits = sum(len(v) for v in grouped_hits.values())
+            if stage > 1 and current_hits >= min_hits:
+                log(f"CASCADE STOP: already have {current_hits} marketplace hit(s)")
+                break
+            log(f"SEARCH STAGE {stage}/{len(cascade_queries)}: {search_query}")
+            try:
+                stage_hits = searcher.search_all(
+                    search_query,
+                    domains,
+                    limit_per_domain=cfg["max_results_per_marketplace"],
+                    exact_query=True,
+                )
+                _merge_grouped_hits(
+                    grouped_hits, stage_hits, domains,
+                    cfg["max_results_per_marketplace"]
+                )
+                log(
+                    f"SEARCH STAGE {stage} RESULT: "
+                    f"{sum(len(v) for v in grouped_hits.values())} unique marketplace hit(s)"
+                )
+            except Exception as e:
+                log(f"SERPER STAGE {stage} ERROR {type(e).__name__}: {e}")
 
         for mp in market_cfg:
             if cancel_cb and cancel_cb():
@@ -235,8 +312,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
             except (TypeError, ValueError):
                 pass
 
-        # Per-marketplace valid prices. We keep every accepted price we found,
-        # so e.g. Prom can show "249 / 349 / 444.98" in one report cell.
+        # Collect all VALID prices found per marketplace.
         marketplace_prices = {}
         for mp in market_cfg:
             prices = [
@@ -247,18 +323,39 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                 f"{p:.2f}".rstrip("0").rstrip(".") for p in prices
             )
 
+        # Count competitor offers with exactly the same price as ours.
         same_price_count = 0
         try:
             own_price_num = float(row.get("Цена")) if row.get("Цена") not in (None, "") else None
             if own_price_num is not None:
                 same_price_count = sum(
                     1 for x in accepted
-                    if x.get("price") is not None and abs(float(x["price"]) - own_price_num) < 0.01
+                    if x.get("price") is not None
+                    and abs(float(x["price"]) - own_price_num) <= float(cfg.get("same_price_tolerance_uah", 1.0))
                 )
         except (TypeError, ValueError):
             same_price_count = 0
 
-        log(f"PRODUCT RESULT: accepted={len(accepted)} suspicious={len(suspicious_prices)} same_price={same_price_count} min={st['min_price']} median={st['median']} reserve={market_reserve_uah} reserve_pct={market_reserve_pct} score={st['price_score']} verdict={st['verdict']}")
+        sellers_found = len(accepted)
+        if sellers_found >= 4:
+            market_confidence = "Висока"
+        elif sellers_found >= 2:
+            market_confidence = "Середня"
+        elif sellers_found == 1:
+            market_confidence = "Низька"
+        else:
+            market_confidence = "Немає даних"
+
+        # Do not issue the strongest recommendation from only one market offer.
+        if sellers_found == 1 and st.get("verdict") == "🔥 РЕКЛАМУВАТИ":
+            st["verdict"] = "🟡 ТЕСТУВАТИ"
+
+        log(
+            f"PRODUCT RESULT: accepted={len(accepted)} suspicious={len(suspicious_prices)} "
+            f"same_price={same_price_count} min={st['min_price']} median={st['median']} "
+            f"reserve={market_reserve_uah} reserve_pct={market_reserve_pct} "
+            f"score={st['price_score']} verdict={st['verdict']}"
+        )
 
         report_row = {
             "Вердикт": st["verdict"],
@@ -275,8 +372,11 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
         }
         for mp in market_cfg:
             report_row[mp["name"]] = marketplace_prices.get(mp["name"], "")
+
         report_row.update({
+            "Найдено продавців": sellers_found,
             "= моїй ціні": same_price_count,
+            "Достовірність": market_confidence,
             "Підозрілих цін": len(suspicious_prices),
             "Запас, грн": market_reserve_uah,
             "Запас, %": market_reserve_pct,
@@ -297,7 +397,12 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
         "🔴 НЕ РЕКЛАМУВАТИ": 3,
         "⚪ НЕ ЗНАЙДЕНО": 4,
     }
-    results.sort(key=lambda r: (verdict_order.get(r.get("Вердикт"), 99), -(r.get("Score") or 0)))
+    results.sort(
+        key=lambda r: (
+            verdict_order.get(r.get("Вердикт"), 99),
+            -(r.get("Score") or 0)
+        )
+    )
 
     fields = list(results[0].keys()) if results else []
     if results:

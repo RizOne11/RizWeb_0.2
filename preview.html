@@ -1,1 +1,68 @@
-<!doctype html><html lang="uk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PriceIntel — результат</title><link rel="stylesheet" href="/static/app.css"></head><body><main class="wide"><header class="top"><div><div class="badge">РЕЗУЛЬТАТ</div><h1>Що рекламувати</h1></div><div class="actions"><a class="secondary link" href="/jobs/{{job.id}}/offers">Пропозиції</a><a class="secondary link" href="/jobs/{{job.id}}/results">CSV</a><a class="primary link" href="/jobs/{{job.id}}/xlsx">⬇ EXCEL</a></div></header><div class="table-wrap"><table><thead><tr><th>Вердикт</th><th>Товар</th><th>Категорія</th><th>Постачальник</th><th>Артикул</th><th>Твоя ціна</th><th>MIN</th><th>Медіана</th><th>Середня</th><th>MAX</th><th>Пропозицій</th><th>Rozetka</th><th>Prom</th><th>Epicentr</th><th>Allo</th><th>Foxtrot</th><th>Comfy</th><th>= моїй ціні</th><th>Підозрілих цін</th><th>Запас, грн</th><th>Запас, %</th><th>Score</th></tr></thead><tbody>{% for r in rows %}<tr><td class="verdict">{{r['Вердикт']}}</td><td>{{r['Товар']}}</td><td>{{r['Категорія']}}</td><td>{{r['Постачальник']}}</td><td>{{r['Артикул']}}</td><td>{{r['Твоя ціна']}}</td><td>{{r['MIN']}}</td><td>{{r['Медіана']}}</td><td>{{r['Середня']}}</td><td>{{r['MAX']}}</td><td>{{r['Пропозицій']}}</td><td class="market-prices">{{r.get('Rozetka','')}}</td><td class="market-prices">{{r.get('Prom','')}}</td><td class="market-prices">{{r.get('Epicentr','')}}</td><td class="market-prices">{{r.get('Allo','')}}</td><td class="market-prices">{{r.get('Foxtrot','')}}</td><td class="market-prices">{{r.get('Comfy','')}}</td><td><b>{{r['= моїй ціні']}}</b></td><td>{{r['Підозрілих цін']}}</td><td>{{r['Запас, грн']}}</td><td>{{r['Запас, %']}}{% if r['Запас, %'] %}%{% endif %}</td><td><b>{{r['Score']}}</b></td></tr>{% endfor %}</tbody></table></div><p class="muted">На екрані показано максимум 200 рядків. Excel містить повний звіт у такій самій структурі.</p></main></body></html>
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PriceIntel — результат</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<main class="wide">
+  <header class="top">
+    <div>
+      <div class="badge">РЕЗУЛЬТАТ</div>
+      <h1>Що рекламувати</h1>
+    </div>
+    <div class="actions">
+      <a class="secondary link" href="/jobs/{{job.id}}/offers">Пропозиції</a>
+      <a class="secondary link" href="/jobs/{{job.id}}/results">CSV</a>
+      <a class="primary link" href="/jobs/{{job.id}}/xlsx">⬇ EXCEL</a>
+    </div>
+  </header>
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>Вердикт</th><th>Товар</th><th>Категорія</th><th>Постачальник</th>
+        <th>Артикул</th><th>Твоя ціна</th><th>MIN</th><th>Медіана</th>
+        <th>Середня</th><th>MAX</th><th>Пропозицій</th>
+        <th>Rozetka</th><th>Prom</th><th>Epicentr</th><th>Allo</th><th>Foxtrot</th><th>Comfy</th><th>Kasta</th><th>Hotline</th>
+        <th>Найдено продавців</th><th>= моїй ціні</th><th>Достовірність</th><th>Підозрілих цін</th><th>Запас, грн</th><th>Запас, %</th><th>Score</th>
+      </tr></thead>
+      <tbody>
+      {% for r in rows %}
+      <tr>
+        <td class="verdict">{{r.get('Вердикт','')}}</td>
+        <td>{{r.get('Товар','')}}</td>
+        <td>{{r.get('Категорія','')}}</td>
+        <td>{{r.get('Постачальник','')}}</td>
+        <td>{{r.get('Артикул','')}}</td>
+        <td>{{r.get('Твоя ціна','')}}</td>
+        <td>{{r.get('MIN','')}}</td>
+        <td>{{r.get('Медіана','')}}</td>
+        <td>{{r.get('Середня','')}}</td>
+        <td>{{r.get('MAX','')}}</td>
+        <td>{{r.get('Пропозицій','')}}</td>
+        <td class="market-prices">{{r.get('Rozetka','')}}</td>
+        <td class="market-prices">{{r.get('Prom','')}}</td>
+        <td class="market-prices">{{r.get('Epicentr','')}}</td>
+        <td class="market-prices">{{r.get('Allo','')}}</td>
+        <td class="market-prices">{{r.get('Foxtrot','')}}</td>
+        <td class="market-prices">{{r.get('Comfy','')}}</td>
+        <td class="market-prices">{{r.get('Kasta','')}}</td>
+        <td class="market-prices">{{r.get('Hotline','')}}</td>
+        <td>{{r.get('Найдено продавців','')}}</td>
+        <td><b>{{r.get('= моїй ціні','')}}</b></td>
+        <td>{{r.get('Достовірність','')}}</td>
+        <td>{{r.get('Підозрілих цін','')}}</td>
+        <td>{{r.get('Запас, грн','')}}</td>
+        <td>{{r.get('Запас, %','')}}{% if r.get('Запас, %') not in ['', None] %}%{% endif %}</td>
+        <td><b>{{r.get('Score','')}}</b></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="muted">На екрані показано максимум 200 рядків. Повний результат — у Excel або CSV.</p>
+</main>
+</body>
+</html>

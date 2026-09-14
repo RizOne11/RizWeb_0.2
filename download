@@ -1,5 +1,2 @@
-__pycache__
-*.pyc
-.git
-.venv
-data/jobs/*
+# Created by pytest automatically.
+*

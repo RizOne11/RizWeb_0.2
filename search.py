@@ -71,7 +71,7 @@ class SerperSearch:
         return identifier.strip('\'"“”`') or q
 
     def _cache_key(self, simple_query, domains):
-        return "serper:v04:" + simple_query.lower() + ":" + ",".join(sorted(d.lower() for d in domains))
+        return "serper:v06:" + simple_query.lower() + ":" + ",".join(sorted(d.lower() for d in domains))
 
     def _request(self, simple_query, domains):
         cache_key = self._cache_key(simple_query, domains)
@@ -118,11 +118,11 @@ class SerperSearch:
                 self.log(f"SERPER CACHE WRITE ERROR {type(e).__name__}: {e}")
         return data
 
-    def search_all(self, query, domains, limit_per_domain=5):
+    def search_all(self, query, domains, limit_per_domain=5, exact_query=False):
         if not self.api_key:
             raise RuntimeError("SERPER_API_KEY is not configured. Add it in Render -> Environment.")
 
-        simple_query = self._extract_identifier(query)
+        simple_query = " ".join(str(query or "").split()).strip() if exact_query else self._extract_identifier(query)
         data = self._request(simple_query, domains)
         if not data:
             return {d: [] for d in domains}

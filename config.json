@@ -23,6 +23,14 @@
     {
       "name": "Comfy",
       "domain": "comfy.ua"
+    },
+    {
+      "name": "Kasta",
+      "domain": "kasta.ua"
+    },
+    {
+      "name": "Hotline",
+      "domain": "hotline.ua"
     }
   ],
   "max_results_per_marketplace": 5,
@@ -36,5 +44,9 @@
   "serper_cache_seconds": 259200,
   "page_cache_seconds": 86400,
   "search_price_match_threshold": 90,
-  "serper_price_ratio_limit": 3.0
+  "serper_price_ratio_limit": 3.0,
+  "cascade_search_enabled": true,
+  "cascade_min_hits": 3,
+  "cascade_max_queries": 3,
+  "same_price_tolerance_uah": 1.0
 }

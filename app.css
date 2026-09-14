@@ -2,4 +2,4 @@
 
 .drop.has-file{border-color:#4fd89a;background:#0c1b17}.drop.bad-file{border-color:#e45d68;background:#1d1014}.drop.dragging{border-color:var(--accent);box-shadow:0 0 0 3px #71f7b522}.file-pill{margin-top:12px;padding:8px 12px;border-radius:999px;background:#173328;color:#aaf7cf;font-size:13px;font-weight:800;max-width:90%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.primary:disabled{opacity:.65;cursor:wait}
 
-.market-prices{min-width:150px;white-space:normal;line-height:1.45}.verdict{position:sticky;left:0;z-index:1;background:#111824}thead th:first-child{left:0;z-index:4}
+.market-prices{min-width:150px;white-space:normal;line-height:1.45}.verdict{font-weight:800;min-width:210px}
