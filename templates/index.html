@@ -7,132 +7,37 @@
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-<main class="wrap">
+<main class="wrap platform-home">
   <section class="hero">
-    <div class="badge">{{app_name|upper}} • {{app_version}} • PRODUCTION RELEASE</div>
-    <h1>Знайди товари, на які варто лити рекламу.</h1>
-    <p>Завантаж CSV постачальника. PriceIntel порівняє твою ціну з ринком, відфільтрує чужі моделі, збалансує незалежні джерела та поставить Price Score.</p>
+    <div class="badge">{{app_name|upper}} • {{app_version}} • FOUNDATION</div>
+    <h1>Одна платформа. Два ПУМАгателя.</h1>
+    <p>Аналізуємо ринок окремо, готуємо контент окремо, але працюємо з одним товарним ядром і незмінним артикулом постачальника.</p>
   </section>
 
-  <section class="card">
-    <form action="/analyze" method="post" enctype="multipart/form-data" id="analysis-form">
-      <label class="drop" id="drop-zone" for="catalog-input">
-        <input id="catalog-input" type="file" name="catalog" accept=".csv,text/csv" required>
-        <span class="drop-title" id="drop-title">📄 Вибрати CSV-файл</span>
-        <span class="muted" id="file-status">Натисни сюди або перетягни CSV у це поле</span>
-        <span class="file-pill hidden" id="file-pill"></span>
-      </label>
-
-      <div class="grid">
-        <label>Постачальник
-          <input name="supplier" type="text" placeholder="Напр. ERC, Brain, Юг-Контракт" required>
-        </label>
-        <label>Скільки товарів аналізувати зараз?
-          <input name="limit" type="number" value="30" min="1" max="5000">
-        </label>
-        <div>
-          <div class="label">Маркетплейси</div>
-          <div class="checks">
-            {% for m in marketplaces %}
-              <label><input type="checkbox" name="marketplaces" value="{{m.name}}" checked> {{m.name}}</label>
-            {% endfor %}
-          </div>
-        </div>
-      </div>
-
-      <div class="cost-box" id="cost-box">
-        <b>💵 Прогноз Serper:</b> <span id="cost-forecast">—</span>
-        <div class="muted">Оцінка до запуску. Кеш та адаптивний пошук можуть зменшити фактичну кількість платних запитів.</div>
-      </div>
-      <button class="primary" id="submit-btn" type="submit">🚀 Почати аналіз</button>
-      <p class="hint">v1.0: balanced market + adaptive search + parallel prefetch + checkpoint/resume.</p>
-    </form>
+  <section class="module-grid">
+    <a class="module-card" href="/analysis">
+      <span class="module-icon">📊</span>
+      <span class="module-kicker">MARKET ANALYSIS</span>
+      <h2>доПУМАгатель</h2>
+      <p>Ціни, конкуренти, медіана ринку, знижка постачальника, Price Score і рішення що рекламувати.</p>
+      <span class="module-cta">Відкрити аналіз →</span>
+    </a>
+    <a class="module-card" href="/content">
+      <span class="module-icon">✍️</span>
+      <span class="module-kicker">CONTENT STUDIO</span>
+      <h2>ПереводоПУМОгатель</h2>
+      <p>Українська назва, опис, характеристики, SEO і майбутня підготовка фіду для OpenCart 4.1.</p>
+      <span class="module-cta">Відкрити контент →</span>
+    </a>
   </section>
 
-  <section class="mini">
-    <div><b>Adaptive Search</b><span>копає глибше лише коли незалежних джерел замало</span></div>
-    <div><b>Checkpoint / Resume</b><span>можна продовжити після зупинки або обриву</span></div>
-    <div><b>Release Metrics</b><span>час, товари/хв, покриття, джерела та API-витрати</span></div>
+  <section class="card rule-card">
+    <div class="badge">SKU LOCK</div>
+    <h2>Артикул постачальника недоторканний.</h2>
+    <p class="muted">vendorCode / Артикул переноситься з YML або CSV без перекладу, очищення чи автоматичної заміни. Він залишається ключем для пошуку товару та постачальника в Hubber.pro.</p>
   </section>
 
   <footer class="brand-footer">{{brand_line}} • {{app_name}} {{app_version}}</footer>
 </main>
-
-<script>
-(() => {
-  const input = document.getElementById('catalog-input');
-  const drop = document.getElementById('drop-zone');
-  const title = document.getElementById('drop-title');
-  const status = document.getElementById('file-status');
-  const pill = document.getElementById('file-pill');
-  const form = document.getElementById('analysis-form');
-  const submit = document.getElementById('submit-btn');
-  const limitInput = form.querySelector('input[name="limit"]');
-  const forecastEl = document.getElementById('cost-forecast');
-  const requestsPerProduct = Number({{forecast_requests_per_product|tojson}});
-  const usdPer1000 = Number({{serper_usd_per_1000|tojson}});
-
-  function updateForecast() {
-    const products = Math.max(1, parseInt(limitInput.value || '1', 10));
-    const requests = Math.ceil(products * requestsPerProduct);
-    const usd = requests * usdPer1000 / 1000;
-    forecastEl.textContent = `≈ ${requests.toLocaleString('uk-UA')} API-запитів • ≈ $${usd.toFixed(2)}`;
-  }
-  limitInput.addEventListener('input', updateForecast);
-  updateForecast();
-
-  function formatSize(bytes) {
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-    return (bytes / 1024 / 1024).toFixed(1) + ' MB';
-  }
-
-  function showFile(file) {
-    if (!file) return;
-    const isCsv = file.name.toLowerCase().endsWith('.csv');
-    if (!isCsv) {
-      input.value = '';
-      drop.classList.remove('has-file');
-      drop.classList.add('bad-file');
-      title.textContent = '⚠️ Потрібен CSV-файл';
-      status.textContent = 'Обраний файл має інше розширення.';
-      pill.classList.add('hidden');
-      return;
-    }
-    drop.classList.remove('bad-file');
-    drop.classList.add('has-file');
-    title.textContent = '✅ CSV вибрано';
-    status.textContent = 'Можна запускати аналіз';
-    pill.textContent = file.name + ' • ' + formatSize(file.size);
-    pill.classList.remove('hidden');
-  }
-
-  input.addEventListener('change', () => showFile(input.files[0]));
-  ['dragenter','dragover'].forEach(evt => drop.addEventListener(evt, e => {
-    e.preventDefault(); drop.classList.add('dragging');
-  }));
-  ['dragleave','drop'].forEach(evt => drop.addEventListener(evt, e => {
-    e.preventDefault(); drop.classList.remove('dragging');
-  }));
-  drop.addEventListener('drop', e => {
-    const files = e.dataTransfer.files;
-    if (!files || !files.length) return;
-    const dt = new DataTransfer(); dt.items.add(files[0]);
-    input.files = dt.files; showFile(files[0]);
-  });
-
-  form.addEventListener('submit', e => {
-    if (!input.files.length) {
-      e.preventDefault();
-      drop.classList.add('bad-file');
-      title.textContent = '⚠️ Спочатку вибери CSV';
-      status.textContent = 'Файл ще не додано.';
-      return;
-    }
-    submit.disabled = true;
-    submit.textContent = '⏳ Завантажуємо файл…';
-  });
-})();
-</script>
 </body>
 </html>

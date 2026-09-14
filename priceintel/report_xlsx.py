@@ -28,8 +28,8 @@ def _branding():
     except Exception:
         cfg = {}
     return (
-        str(cfg.get("app_name", "PriceIntel")),
-        str(cfg.get("app_version", "v1.0")),
+        str(cfg.get("app_name", "PUMA Platform")),
+        str(cfg.get("app_version", "v1.1")),
         str(cfg.get("brand_line", "Made by Пума (Чернявський А.)")),
     )
 
@@ -87,7 +87,7 @@ def build_xlsx(csv_path, xlsx_path):
         ws.write(header_row, c, h, header_fmt)
 
     number_cols = {
-        "Твоя ціна", "MIN", "Медіана", "Середня", "MAX",
+        "Стара ціна", "Твоя ціна", "MIN", "Медіана", "Середня", "MAX",
         "Пропозицій", "Джерел ринку", "Пропозицій інших магазинів",
         "Найдено продавців", "= моїй ціні", "Підозрілих цін",
         "Запас, грн", "Score"
@@ -108,7 +108,7 @@ def build_xlsx(csv_path, xlsx_path):
                     "valign": "vcenter"
                 })
                 ws.write(r_idx, c_idx, value, fmt)
-            elif h == "Запас, %":
+            elif h in {"Запас, %", "Знижка, %"}:
                 n = _num(value)
                 if n is None:
                     ws.write_blank(r_idx, c_idx, None, pct_fmt)
@@ -127,7 +127,7 @@ def build_xlsx(csv_path, xlsx_path):
 
     widths = {
         "Вердикт": 25, "Причина вердикту": 31, "Товар": 42, "Категорія": 22,
-        "Постачальник": 18, "Артикул": 20, "Твоя ціна": 13, "MIN": 12,
+        "Постачальник": 18, "Артикул": 20, "Стара ціна": 13, "Знижка, %": 12, "Твоя ціна": 13, "MIN": 12,
         "Медіана": 12, "Середня": 12, "MAX": 12, "Пропозицій": 12,
         "Джерел ринку": 13, "Rozetka": 20, "Prom": 24, "Epicentr": 20,
         "Allo": 20, "Foxtrot": 20, "Comfy": 20, "Kasta": 20, "Hotline": 24,

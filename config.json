@@ -57,11 +57,14 @@
   "market_overprice_red_pct": 10.0,
   "page_fetch_workers": 6,
   "request_timeout_seconds": 12,
-  "app_name": "PriceIntel",
-  "app_version": "v1.0",
-  "release_name": "Production Release",
+  "app_name": "PUMA Platform",
+  "app_version": "v1.1",
+  "release_name": "Foundation Release",
   "brand_author": "Пума (Чернявський А.)",
   "brand_line": "Made by Пума (Чернявський А.)",
   "adaptive_search_enabled": true,
-  "adaptive_min_candidate_sources": 4
+  "adaptive_min_candidate_sources": 4,
+  "analysis_module_name": "доПУМАгатель",
+  "content_module_name": "ПереводоПУМОгатель",
+  "sku_lock": true
 }

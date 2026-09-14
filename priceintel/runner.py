@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import requests
 
-from .io import read_catalog, write_csv
+from .io import read_catalog, write_csv, discount_pct
 from .matcher import build_query, score_match
 from .search import SerperSearch
 from .extract import extract_product
@@ -191,7 +191,7 @@ def _save_checkpoint(path, next_index, results, offer_rows, log, elapsed_seconds
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.with_suffix(p.suffix + ".tmp")
         payload = {
-            "version": "v1.0",
+            "version": "v1.1",
             "next_index": int(next_index),
             "results": results,
             "offer_rows": offer_rows,
@@ -295,15 +295,13 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
     log = log_cb or (lambda msg: None)
     run_started = time.perf_counter()
     cfg = json.loads((BASE / "config.json").read_text(encoding="utf-8"))
-    app_version = str(cfg.get("app_version", "v1.0"))
+    app_version = str(cfg.get("app_version", "v1.1"))
     brand_author = str(cfg.get("brand_author", "Пума (Чернявський А.)"))
     selected = set(marketplaces or [m["name"] for m in cfg["marketplaces"]])
     market_cfg = [m for m in cfg["marketplaces"] if m["name"] in selected]
-    rows = read_catalog(input_csv)
-    if limit:
-        rows = rows[:limit]
+    rows = read_catalog(input_csv, limit=limit)
 
-    log(f"ENGINE v1.0 | START products={len(rows)} marketplaces={[m['name'] for m in market_cfg]}")
+    log(f"ENGINE {app_version} | START products={len(rows)} marketplaces={[m['name'] for m in market_cfg]}")
 
     # Global cache reused by all jobs on the same Render instance.
     cache = Cache(str(DATA_DIR / "priceintel_global_cache.sqlite"))
@@ -772,6 +770,8 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
             "Категорія": row.get("Категория", ""),
             "Постачальник": supplier,
             "Артикул": row.get("Артикул", ""),
+            "Стара ціна": row.get("Старая цена"),
+            "Знижка, %": discount_pct(row),
             "Твоя ціна": row.get("Цена"),
             "MIN": st["min_price"],
             "Медіана": st["median"],

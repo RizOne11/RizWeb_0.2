@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>PriceIntel {{app_version}} — результат</title>
+  <title>PUMA Platform {{app_version}} — результат</title>
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
@@ -24,7 +24,7 @@
     <table>
       <thead><tr>
         <th>Вердикт</th><th>Причина</th><th>Товар</th><th>Категорія</th><th>Постачальник</th>
-        <th>Артикул</th><th>Твоя ціна</th><th>MIN</th><th>Медіана</th>
+        <th>Артикул</th><th>Стара ціна</th><th>Знижка, %</th><th>Твоя ціна</th><th>MIN</th><th>Медіана</th>
         <th>Середня</th><th>MAX</th><th>Пропозицій</th><th>Джерел ринку</th>
         <th>Rozetka</th><th>Prom</th><th>Epicentr</th><th>Allo</th><th>Foxtrot</th><th>Comfy</th><th>Kasta</th><th>Hotline</th>
         <th>Інші магазини</th><th>Магазини</th><th>Пропозицій інших магазинів</th><th>Найдено продавців</th><th>= моїй ціні</th><th>Достовірність</th><th>Підозрілих цін</th><th>Запас, грн</th><th>Запас, %</th><th>Score</th>
@@ -36,7 +36,7 @@
         <td>{{r.get('Причина вердикту','')}}</td>
         <td>{{r.get('Товар','')}}</td><td>{{r.get('Категорія','')}}</td>
         <td>{{r.get('Постачальник','')}}</td><td>{{r.get('Артикул','')}}</td>
-        <td>{{r.get('Твоя ціна','')}}</td><td>{{r.get('MIN','')}}</td>
+        <td>{{r.get('Стара ціна','')}}</td><td>{{r.get('Знижка, %','')}}</td><td>{{r.get('Твоя ціна','')}}</td><td>{{r.get('MIN','')}}</td>
         <td>{{r.get('Медіана','')}}</td><td>{{r.get('Середня','')}}</td>
         <td>{{r.get('MAX','')}}</td><td>{{r.get('Пропозицій','')}}</td>
         <td><b>{{r.get('Джерел ринку','')}}</b></td>
@@ -56,7 +56,7 @@
     </table>
   </div>
   <p class="muted">На екрані максимум 200 рядків. Повний результат — у Excel або CSV.</p>
-  <footer class="brand-footer">{{brand_line}} • PriceIntel {{app_version}}</footer>
+  <div class="actions"><a class="secondary link" href="/">PUMA Platform</a><a class="secondary link" href="/content">ПереводоПУМОгатель</a></div><footer class="brand-footer">{{brand_line}} • PUMA Platform {{app_version}}</footer>
 </main>
 </body>
 </html>

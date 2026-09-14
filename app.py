@@ -13,11 +13,12 @@ from werkzeug.utils import secure_filename
 
 from priceintel.runner import run_analysis
 from priceintel.report_xlsx import build_xlsx
+from priceintel.io import read_catalog
 
 BASE = Path(__file__).resolve().parent
 JOBS_DIR = BASE / "data" / "jobs"
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
-ALLOWED_EXTENSIONS = {"csv"}
+ALLOWED_EXTENSIONS = {"csv", "yml", "xml"}
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "120"))
 
 app = Flask(__name__)
@@ -230,17 +231,78 @@ def _start_worker(job_id):
 _load_previous_jobs()
 
 
+def _ui_cfg():
+    return json.loads((BASE / "config.json").read_text(encoding="utf-8"))
+
+
 @app.get("/")
 def index():
-    cfg = json.loads((BASE / "config.json").read_text(encoding="utf-8"))
+    cfg = _ui_cfg()
     return render_template(
         "index.html",
+        app_name=cfg.get("app_name", "PUMA Platform"),
+        app_version=cfg.get("app_version", "v1.1"),
+        brand_line=cfg.get("brand_line", "Made by Пума (Чернявський А.)"),
+    )
+
+
+@app.get("/analysis")
+def analysis_page():
+    cfg = _ui_cfg()
+    return render_template(
+        "analysis.html",
         marketplaces=cfg["marketplaces"],
-        app_name=cfg.get("app_name", "PriceIntel"),
-        app_version=cfg.get("app_version", "v1.0"),
+        app_name=cfg.get("app_name", "PUMA Platform"),
+        app_version=cfg.get("app_version", "v1.1"),
         brand_line=cfg.get("brand_line", "Made by Пума (Чернявський А.)"),
         forecast_requests_per_product=cfg.get("serper_forecast_requests_per_product", 1.7),
         serper_usd_per_1000=cfg.get("serper_usd_per_1000", 1.0),
+    )
+
+
+@app.get("/content")
+def content_page():
+    cfg = _ui_cfg()
+    return render_template(
+        "content.html",
+        app_name=cfg.get("app_name", "PUMA Platform"),
+        app_version=cfg.get("app_version", "v1.1"),
+        brand_line=cfg.get("brand_line", "Made by Пума (Чернявський А.)"),
+    )
+
+
+@app.post("/content/preview")
+def content_preview():
+    f = request.files.get("catalog")
+    if not f or not f.filename:
+        return render_template("error.html", message="Не вибрано YML/CSV-файл."), 400
+    if not allowed_file(f.filename):
+        return render_template("error.html", message="Підтримуються YML, XML та CSV."), 400
+
+    supplier = (request.form.get("supplier") or "Hubber").strip() or "Hubber"
+    try:
+        limit = max(1, min(int(request.form.get("limit") or 20), 200))
+    except ValueError:
+        limit = 20
+
+    tmp_dir = JOBS_DIR / ("content_" + uuid.uuid4().hex[:12])
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    filename = secure_filename(f.filename) or "catalog.yml"
+    path = tmp_dir / filename
+    f.save(path)
+    try:
+        rows = read_catalog(str(path), include_content=True, limit=limit)
+    except Exception as e:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return render_template("error.html", message=f"Не вдалося прочитати каталог: {e}"), 400
+
+    cfg = _ui_cfg()
+    # The preview is intentionally ephemeral; persistent content jobs arrive in the next build.
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+    return render_template(
+        "content_preview.html", rows=rows, supplier=supplier,
+        app_version=cfg.get("app_version", "v1.1"),
+        brand_line=cfg.get("brand_line", "Made by Пума (Чернявський А.)"),
     )
 
 
@@ -248,9 +310,9 @@ def index():
 def analyze():
     f = request.files.get("catalog")
     if not f or not f.filename:
-        return render_template("error.html", message="Не вибрано CSV-файл."), 400
+        return render_template("error.html", message="Не вибрано YML/CSV-файл."), 400
     if not allowed_file(f.filename):
-        return render_template("error.html", message="Поки підтримується CSV."), 400
+        return render_template("error.html", message="Підтримуються YML, XML та CSV."), 400
 
     supplier = (request.form.get("supplier") or "").strip()
     if not supplier:
@@ -271,7 +333,7 @@ def analyze():
     job_id = uuid.uuid4().hex[:12]
     job_dir = JOBS_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
-    filename = secure_filename(f.filename) or "catalog.csv"
+    filename = secure_filename(f.filename) or "catalog.yml"
     input_path = job_dir / filename
     f.save(input_path)
 
@@ -389,7 +451,7 @@ def download_xlsx(job_id):
     if not p.exists():
         p = JOBS_DIR / job_id / "market_analysis.xlsx"
         build_xlsx(job["results_file"], str(p))
-    return send_file(p, as_attachment=True, download_name="PriceIntel_market_report.xlsx")
+    return send_file(p, as_attachment=True, download_name="PUMA_doPUMAgatel_market_report.xlsx")
 
 
 @app.get("/jobs/<job_id>/results")
