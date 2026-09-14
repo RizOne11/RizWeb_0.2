@@ -290,6 +290,148 @@ def _canonical_hit_key(hit):
     return (hit.get("canonical_url") or hit.get("url") or "").strip()
 
 
+def _offer_identity_key(domain, url):
+    """Canonical offer key used for dedup before and after verification."""
+    u = str(url or "")
+    low = u.lower()
+    try:
+        from urllib.parse import urlsplit, urlunsplit
+        parts = urlsplit(u)
+        path = parts.path
+    except Exception:
+        path = u
+    d = str(domain or "").lower()
+    if d == "rozetka.com.ua":
+        m = re.search(r"/p(\d+)(?:/|$)", path, re.I)
+        if m:
+            return f"rozetka:p{m.group(1)}"
+    if d == "prom.ua":
+        m = re.search(r"/(?:ua/)?(m-?\d+|p\d+)(?:-|/|$)", path, re.I)
+        if m:
+            return "prom:" + m.group(1).lower().replace("-", "")
+    if d == "epicentrk.ua":
+        norm = re.sub(r"^/(?:ua|ru)/", "/", path, flags=re.I).rstrip("/")
+        if norm.endswith(".html"):
+            return "epicentr:" + norm.casefold()
+    if d == "hotline.ua":
+        norm = re.sub(r"^/(?:ua|ru)/", "/", path, flags=re.I).rstrip("/")
+        if "/computer-monitory/" in norm:
+            return "hotline:" + norm.casefold()
+    # General fallback: ignore locale prefix and common tracking query noise.
+    norm = re.sub(r"^/(?:ua|ru)/", "/", path, flags=re.I).rstrip("/")
+    host = re.sub(r"^www\.", "", re.sub(r"^https?://", "", low).split("/", 1)[0])
+    return f"{host}:{norm.casefold()}"
+
+
+def _is_direct_product_url(domain, url):
+    """Reject category/search/filter pages from the offer-verification queue."""
+    u = str(url or "")
+    try:
+        from urllib.parse import urlsplit
+        path = urlsplit(u).path.lower()
+    except Exception:
+        path = u.lower()
+    d = str(domain or "").lower()
+    if d == "rozetka.com.ua":
+        return bool(re.search(r"/p\d+/?$", path))
+    if d == "prom.ua":
+        return bool(re.search(r"/(?:ua/)?(?:m-?\d+|p\d+)(?:-|/|$)", path))
+    if d == "epicentrk.ua":
+        return "/shop/" in path and path.endswith(".html") and "/fs/" not in path
+    if d == "hotline.ua":
+        return "/computer-monitory/" in path and "/computer/monitory/" not in path
+    # Generic ecommerce heuristic: explicit product-ish paths are preferred, while
+    # obvious search/category/filter pages are excluded.
+    bad = ("/search", "/catalog", "/category", "/categories", "/fs/", "/filter", "/blog/")
+    if any(x in path for x in bad):
+        return False
+    return True
+
+
+def _primary_public_model(row):
+    models = _public_model_tokens(row)
+    return models[0] if models else ""
+
+
+def _prepare_candidates(row, grouped, market_cfg, cfg, log):
+    """Cheap identity gate before any page fetch/Firecrawl scrape.
+
+    Search engines intentionally return broad candidates. Verification is expensive,
+    so keep direct product pages that already have strong model/title evidence and
+    deduplicate localized/category aliases first.
+    """
+    primary = _primary_public_model(row)
+    primary_cf = primary.casefold()
+    max_verify = max(1, int(cfg.get("verify_candidates_per_marketplace", 8)))
+    prepared = {m["domain"]: [] for m in market_cfg}
+    prepared["__other__"] = []
+
+    for mp in market_cfg:
+        domain = mp["domain"]
+        ranked = []
+        seen = set()
+        for hit in grouped.get(domain, []):
+            url = hit.get("url") or ""
+            title = hit.get("title") or ""
+            snippet = hit.get("snippet") or ""
+            combined = f"{title} {snippet}".casefold()
+            if not _is_direct_product_url(domain, url):
+                log(f"CANDIDATE DROP NON_PRODUCT: {mp['name']} | {url[:120]}")
+                continue
+            info = classify_match(row, title, url, snippet)
+            if info.get("status") == "CONFLICT":
+                log(f"CANDIDATE DROP CONFLICT: {mp['name']} | {title[:100]} | {info.get('reason','')}")
+                continue
+            has_primary = bool(primary_cf and primary_cf in combined)
+            score = float(info.get("score") or 0)
+            # With a strong public MPN, a candidate that does not mention it needs
+            # exceptionally strong independent evidence to justify a live scrape.
+            if primary_cf and not has_primary and score < float(cfg.get("candidate_prefilter_score_without_mpn", 90)):
+                log(f"CANDIDATE DROP WEAK: {mp['name']} score={score:.1f} | {title[:100]}")
+                continue
+            key = _offer_identity_key(domain, hit.get("canonical_url") or url)
+            if not key or key in seen:
+                log(f"CANDIDATE DEDUP: {mp['name']} key={key} | {url[:100]}")
+                continue
+            seen.add(key)
+            position = hit.get("position")
+            try:
+                position = int(position)
+            except Exception:
+                position = 9999
+            rank = (1 if has_primary else 0, 1 if info.get("status") == "EXACT" else 0, score, -position)
+            ranked.append((rank, hit))
+        ranked.sort(key=lambda x: x[0], reverse=True)
+        prepared[domain] = [hit for _, hit in ranked[:max_verify]]
+        log(f"CANDIDATE PREP: {mp['name']} raw={len(grouped.get(domain, []))} verify={len(prepared[domain])}")
+
+    # Independent stores: retain exact/strong candidates; there is no universal
+    # product URL grammar, so identity evidence is the primary filter.
+    other_ranked = []
+    other_seen = set()
+    for hit in grouped.get("__other__", []):
+        url = hit.get("url") or ""
+        title = hit.get("title") or ""
+        snippet = hit.get("snippet") or ""
+        info = classify_match(row, title, url, snippet)
+        if info.get("status") == "CONFLICT":
+            continue
+        combined = f"{title} {snippet}".casefold()
+        has_primary = bool(primary_cf and primary_cf in combined)
+        score = float(info.get("score") or 0)
+        if primary_cf and not has_primary and score < float(cfg.get("candidate_prefilter_score_without_mpn", 90)):
+            continue
+        key = _offer_identity_key("", hit.get("canonical_url") or url)
+        if key in other_seen:
+            continue
+        other_seen.add(key)
+        other_ranked.append(((1 if has_primary else 0, score), hit))
+    other_ranked.sort(key=lambda x: x[0], reverse=True)
+    prepared["__other__"] = [hit for _, hit in other_ranked[:int(cfg.get("other_ua_shops_max_hits", 80))]]
+    log(f"CANDIDATE PREP: Other-UA raw={len(grouped.get('__other__', []))} verify={len(prepared['__other__'])}")
+    return prepared
+
+
 def _merge_grouped_hits(target, incoming, domains, limit_per_domain, other_limit=12):
     for domain in domains:
         current = target.setdefault(domain, [])
@@ -345,6 +487,11 @@ def _run_search_matrix(row, market_cfg, searcher, cfg, log):
     matrix = _search_matrix_queries(row, cfg.get("search_matrix_max_queries", 6))
     broad_limit = int(cfg.get("broad_search_matrix_max_queries", len(matrix)))
     target_limit = int(cfg.get("marketplace_search_matrix_max_queries", len(matrix)))
+    # Products without a strong public model/MPN need a wider identity cascade;
+    # products with a strong MPN stay on the cheap, precise path.
+    if not _primary_public_model(row):
+        broad_limit = max(broad_limit, int(cfg.get("no_mpn_broad_queries", 2)))
+        target_limit = max(target_limit, int(cfg.get("no_mpn_marketplace_queries", 3)))
     max_per_domain = int(cfg.get("max_results_per_marketplace", 20))
     other_limit = int(cfg.get("other_ua_shops_max_hits", 80))
 
@@ -578,6 +725,8 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
         other_limit=cfg.get("other_ua_shops_max_hits", 80),
         recovery_min_hits=cfg.get("provider_recovery_min_hits", 2),
         firecrawl_keyless=cfg.get("firecrawl_keyless_enabled", True),
+        firecrawl_min_interval_seconds=cfg.get("firecrawl_min_interval_seconds", 6.2),
+        firecrawl_rate_limit_retries=cfg.get("firecrawl_rate_limit_retries", 2),
     )
     log(
         "PROVIDERS: "
@@ -627,11 +776,19 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
         suspicious_prices = []
         accepted_other = []
         suspicious_other = []
+        accepted_offer_keys = set()
+        accepted_other_keys = set()
         domains = [m["domain"] for m in market_cfg]
 
         grouped_hits, search_matrix, marketplace_search_errors = _run_search_matrix(
             row, market_cfg, searcher, cfg, log
         )
+        log(
+            "SEARCH RAW SUMMARY: "
+            + " | ".join(f"{m['name']}={len(grouped_hits.get(m['domain'], []))}" for m in market_cfg)
+            + f" | other_ua={len(grouped_hits.get('__other__', []))}"
+        )
+        grouped_hits = _prepare_candidates(row, grouped_hits, market_cfg, cfg, log)
 
         deep_scan_enabled = bool(cfg.get("deep_scan_enabled", False))
         tier1_required = [
@@ -843,8 +1000,13 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                     )
                     continue
 
+                offer_key = _offer_identity_key(mp["domain"], final_prod.get("url"))
+                if offer_key in accepted_offer_keys:
+                    log(f"  DUPLICATE OFFER SKIP: {mp['name']} key={offer_key}")
+                    continue
+                accepted_offer_keys.add(offer_key)
                 accepted.append(final_prod)
-                log(f"  ACCEPT: {mp['name']} price={chosen_price} source={price_source} match={match:.1f}")
+                log(f"  ACCEPT: {mp['name']} price={chosen_price} source={price_source} match={match:.1f} key={offer_key}")
 
             if canceled:
                 break
@@ -988,8 +1150,13 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                 log(f"  OTHER SUSPICIOUS: {host} price={chosen_price} -> excluded")
                 continue
 
+            other_key = _offer_identity_key("", final_other.get("url"))
+            if other_key in accepted_other_keys:
+                log(f"  OTHER DUPLICATE SKIP: {host} key={other_key}")
+                continue
+            accepted_other_keys.add(other_key)
             accepted_other.append(final_other)
-            log(f"  OTHER ACCEPT: {host} price={chosen_price} source={price_source} match={match:.1f}")
+            log(f"  OTHER ACCEPT: {host} price={chosen_price} source={price_source} match={match:.1f} key={other_key}")
 
         # v1.2.2 SECOND VERIFICATION GATE: after exact-product matching, remove
         # obvious price-extraction anomalies from market statistics without

@@ -2,6 +2,7 @@ import json
 import os
 import re
 import urllib.parse
+import time
 import requests
 
 PRICE_RE = re.compile(
@@ -78,6 +79,25 @@ def _market_domain(url, domains):
     return None
 
 
+def _looks_ukraine_commerce(hit):
+    """Allow Ukraine-facing stores even when they use .com/.net TLDs.
+
+    Territory is a business constraint, not a TLD constraint. A .ua host is
+    automatically eligible; a non-.ua host must carry strong Ukraine-commerce
+    evidence (UAH/₴/грн, explicit Ukraine wording, or `ukraine` in the host).
+    """
+    url = str((hit or {}).get("url") or "")
+    host = _host(url)
+    if host.endswith('.ua') or 'ukraine' in host:
+        return True
+    text = ' '.join(str((hit or {}).get(k) or '') for k in ('title','snippet','description')).casefold()
+    ua_markers = ('₴', 'грн', 'uah', ' украї', ' украи', 'київ', 'киев', 'дніпр', 'днепр')
+    foreign_markers = (' руб', '₽', ' бел.р', ' byn', ' uzs', ' сум ')
+    if any(x in text for x in ua_markers) and not any(x in text for x in foreign_markers):
+        return True
+    return False
+
+
 def _empty_grouped(domains):
     grouped = {d: [] for d in domains}
     grouped["__other__"] = []
@@ -107,7 +127,7 @@ def _append_hit(grouped, hit, domains, limit_per_domain=20, other_limit=80):
     blocked_host = any(host == x or host.endswith("." + x) for x in excluded_other_hosts)
     # PUMA market scope: Ukraine only. A .ua store can be retained as Other-UA;
     # non-UA domains are ignored here and cannot affect the report.
-    if host.endswith(".ua") and not blocked_host:
+    if _looks_ukraine_commerce(hit) and not blocked_host:
         current = grouped.setdefault("__other__", [])
         if len(current) >= other_limit:
             return
@@ -265,7 +285,8 @@ class FirecrawlSearch:
     SEARCH_ENDPOINT = "https://api.firecrawl.dev/v2/search"
     SCRAPE_ENDPOINT = "https://api.firecrawl.dev/v2/scrape"
 
-    def __init__(self, api_key=None, logger=None, timeout=45, location="Ukraine", allow_keyless=True):
+    def __init__(self, api_key=None, logger=None, timeout=45, location="Ukraine", allow_keyless=True,
+                 min_interval_seconds=6.2, rate_limit_retries=2):
         self.api_key = api_key or os.getenv("FIRECRAWL_API_KEY", "").strip()
         self.allow_keyless = bool(allow_keyless)
         self.log = logger or (lambda msg: None)
@@ -274,6 +295,10 @@ class FirecrawlSearch:
         self.api_requests = 0
         self.last_error = ""
         self.disabled_reason = ""
+        self.min_interval_seconds = max(0.0, float(min_interval_seconds))
+        self.rate_limit_retries = max(0, int(rate_limit_retries))
+        self._last_request_at = 0.0
+        self.rate_limit_events = 0
         self.s = requests.Session()
         self.s.headers.update({"Content-Type": "application/json", "Accept": "application/json"})
         if self.api_key:
@@ -292,6 +317,48 @@ class FirecrawlSearch:
                 self.disabled_reason = "API_KEY_REJECTED"
             self.log(f"FIRECRAWL CIRCUIT BREAKER: {self.disabled_reason}; disabling Firecrawl for this run")
 
+    def _throttle(self):
+        """Stay below Firecrawl free-plan request/minute limits.
+
+        Quality-first mode tolerates latency; repeated HTTP 429s waste both time
+        and coverage, so requests are paced proactively.
+        """
+        if self.min_interval_seconds <= 0:
+            return
+        now = time.monotonic()
+        wait = self.min_interval_seconds - (now - self._last_request_at)
+        if wait > 0:
+            self.log(f"FIRECRAWL THROTTLE: waiting {wait:.1f}s")
+            time.sleep(wait)
+
+    def _post_with_backoff(self, endpoint, payload, timeout):
+        for attempt in range(self.rate_limit_retries + 1):
+            self._throttle()
+            self.api_requests += 1
+            self._last_request_at = time.monotonic()
+            r = self.s.post(endpoint, json=payload, timeout=timeout)
+            if r.status_code != 429:
+                return r
+            self.rate_limit_events += 1
+            body = r.text[:500]
+            retry_after = 0.0
+            try:
+                retry_after = float(r.headers.get("Retry-After") or 0)
+            except Exception:
+                retry_after = 0.0
+            if retry_after <= 0:
+                m = re.search(r"retry after\s+(\d+)s", body, re.I)
+                if m:
+                    retry_after = float(m.group(1))
+            if retry_after <= 0:
+                retry_after = 15.0 * (attempt + 1)
+            if attempt >= self.rate_limit_retries:
+                return r
+            wait = min(max(retry_after + 1.0, self.min_interval_seconds), 90.0)
+            self.log(f"FIRECRAWL RATE LIMIT: waiting {wait:.1f}s before retry {attempt+1}/{self.rate_limit_retries}")
+            time.sleep(wait)
+        return r
+
     def search(self, query, domains=None, limit=20):
         if not self.enabled:
             return []
@@ -305,8 +372,7 @@ class FirecrawlSearch:
             payload["includeDomains"] = list(domains)
         self.log(f"FIRECRAWL SEARCH: q={payload['query']!r} domains={domains or 'UA web'}")
         try:
-            self.api_requests += 1
-            r = self.s.post(self.SEARCH_ENDPOINT, json=payload, timeout=self.timeout)
+            r = self._post_with_backoff(self.SEARCH_ENDPOINT, payload, self.timeout)
             self.log(f"FIRECRAWL SEARCH HTTP {r.status_code} len={len(r.content)}")
             if r.status_code >= 400:
                 self.last_error = f"HTTP {r.status_code}: {r.text[:400]}"
@@ -400,8 +466,7 @@ class FirecrawlSearch:
         }
         self.log(f"FIRECRAWL VERIFY: {url[:140]}")
         try:
-            self.api_requests += 1
-            r = self.s.post(self.SCRAPE_ENDPOINT, json=payload, timeout=max(self.timeout, 60))
+            r = self._post_with_backoff(self.SCRAPE_ENDPOINT, payload, max(self.timeout, 60))
             self.log(f"FIRECRAWL VERIFY HTTP {r.status_code} len={len(r.content)}")
             if r.status_code >= 400:
                 self.log(f"FIRECRAWL VERIFY ERROR: {r.text[:400]}")
@@ -511,14 +576,20 @@ class HybridSearch:
 
     def __init__(self, logger=None, gl="ua", hl="uk", num=50, cache=None, cache_ttl=259200,
                  firecrawl_enabled=True, exa_enabled=True, serper_enabled=True,
-                 timeout=45, other_limit=80, recovery_min_hits=2, firecrawl_keyless=True):
+                 timeout=45, other_limit=80, recovery_min_hits=2, firecrawl_keyless=True,
+                 firecrawl_min_interval_seconds=6.2, firecrawl_rate_limit_retries=2):
         self.log = logger or (lambda msg: None)
         self.other_limit = int(other_limit)
         self.recovery_min_hits = max(0, int(recovery_min_hits))
         self.serper = SerperSearch(logger=self.log, gl=gl, hl=hl, num=num, cache=cache, cache_ttl=cache_ttl)
-        self.firecrawl = FirecrawlSearch(logger=self.log, timeout=timeout, allow_keyless=firecrawl_keyless) if firecrawl_enabled else FirecrawlSearch(api_key="", logger=self.log, allow_keyless=False)
+        self.firecrawl = FirecrawlSearch(
+            logger=self.log, timeout=timeout, allow_keyless=firecrawl_keyless,
+            min_interval_seconds=firecrawl_min_interval_seconds,
+            rate_limit_retries=firecrawl_rate_limit_retries,
+        ) if firecrawl_enabled else FirecrawlSearch(api_key="", logger=self.log, allow_keyless=False)
         self.exa = ExaSearch(logger=self.log, timeout=timeout) if exa_enabled else ExaSearch(api_key="", logger=self.log)
         self.serper_enabled = bool(serper_enabled)
+        self.last_error = ""
 
     @property
     def api_requests(self):
@@ -536,6 +607,7 @@ class HybridSearch:
         return clean, domain
 
     def search_all(self, query, domains, limit_per_domain=20, exact_query=False):
+        self.last_error = ""
         clean_query, site_domain = self._strip_site(query)
         target_domains = [site_domain] if site_domain else list(domains)
         target_domains = [d for d in target_domains if d]
@@ -553,6 +625,8 @@ class HybridSearch:
                     limit_per_domain=limit_per_domain, other_limit=self.other_limit
                 )
             _merge_grouped(grouped, fc, domains, limit_per_domain, self.other_limit)
+            if self.firecrawl.last_error:
+                self.last_error = self.firecrawl.last_error
 
         def candidate_count():
             return sum(len(grouped.get(d, [])) for d in domains) + len(grouped.get("__other__", []))
@@ -578,6 +652,8 @@ class HybridSearch:
             "HYBRID SEARCH RESULT: " + " | ".join(f"{d}={len(grouped.get(d, []))}" for d in domains)
             + f" | other_ua={len(grouped.get('__other__', []))}"
         )
+        if site_domain and candidate_count() == 0 and self.last_error and "HTTP 429" in self.last_error:
+            raise RuntimeError(f"FIRECRAWL_RATE_LIMIT: {self.last_error[:180]}")
         return grouped
 
     def verify_page(self, url):
