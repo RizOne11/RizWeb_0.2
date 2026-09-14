@@ -9,7 +9,7 @@
 <body>
 <main class="wrap">
   <section class="hero">
-    <div class="badge">PRICE INTELLIGENCE • MVP v0.5.1 • UNIFIED REPORT</div>
+    <div class="badge">PRICE INTELLIGENCE • MVP v0.8.0 • BALANCED UA MARKET</div>
     <h1>Знайди товари, на які варто лити рекламу.</h1>
     <p>Завантаж CSV постачальника. PriceIntel порівняє твою ціну з ринком, відфільтрує схожі товари та поставить Price Score.</p>
   </section>
@@ -40,8 +40,12 @@
         </div>
       </div>
 
+      <div class="cost-box" id="cost-box">
+        <b>💵 Прогноз Serper:</b> <span id="cost-forecast">—</span>
+        <div class="muted">Оцінка до запуску. Кеш може зменшити фактичну кількість платних запитів.</div>
+      </div>
       <button class="primary" id="submit-btn" type="submit">🚀 Почати аналіз</button>
-      <p class="hint">Для першого live-тесту залиш 5 товарів. Після перевірки якості збігів масштабуємо.</p>
+      <p class="hint">v0.8 рахує ринок збалансовано: один незалежний майданчик/магазин = один голос у ринковій статистиці.</p>
     </form>
   </section>
 
@@ -61,6 +65,19 @@
   const pill = document.getElementById('file-pill');
   const form = document.getElementById('analysis-form');
   const submit = document.getElementById('submit-btn');
+  const limitInput = form.querySelector('input[name="limit"]');
+  const forecastEl = document.getElementById('cost-forecast');
+  const requestsPerProduct = 1.7;
+  const usdPer1000 = 1.0;
+
+  function updateForecast() {
+    const products = Math.max(1, parseInt(limitInput.value || '1', 10));
+    const requests = Math.ceil(products * requestsPerProduct);
+    const usd = requests * usdPer1000 / 1000;
+    forecastEl.textContent = `≈ ${requests.toLocaleString('uk-UA')} API-запитів • ≈ $${usd.toFixed(2)}`;
+  }
+  limitInput.addEventListener('input', updateForecast);
+  updateForecast();
 
   function formatSize(bytes) {
     if (bytes < 1024) return bytes + ' B';

@@ -24,7 +24,7 @@
       <thead><tr>
         <th>Вердикт</th><th>Товар</th><th>Категорія</th><th>Постачальник</th>
         <th>Артикул</th><th>Твоя ціна</th><th>MIN</th><th>Медіана</th>
-        <th>Середня</th><th>MAX</th><th>Пропозицій</th>
+        <th>Середня</th><th>MAX</th><th>Пропозицій</th><th>Джерел ринку</th>
         <th>Rozetka</th><th>Prom</th><th>Epicentr</th><th>Allo</th><th>Foxtrot</th><th>Comfy</th><th>Kasta</th><th>Hotline</th>
         <th>Інші магазини</th><th>Магазини</th><th>Пропозицій інших магазинів</th><th>Найдено продавців</th><th>= моїй ціні</th><th>Достовірність</th><th>Підозрілих цін</th><th>Запас, грн</th><th>Запас, %</th><th>Score</th>
       </tr></thead>
@@ -42,6 +42,7 @@
         <td>{{r.get('Середня','')}}</td>
         <td>{{r.get('MAX','')}}</td>
         <td>{{r.get('Пропозицій','')}}</td>
+        <td><b>{{r.get('Джерел ринку','')}}</b></td>
         <td class="market-prices">{{r.get('Rozetka','')}}</td>
         <td class="market-prices">{{r.get('Prom','')}}</td>
         <td class="market-prices">{{r.get('Epicentr','')}}</td>

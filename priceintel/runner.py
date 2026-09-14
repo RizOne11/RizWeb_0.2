@@ -1,6 +1,7 @@
 import json
 import time
 import re
+import statistics
 from pathlib import Path
 import requests
 
@@ -14,6 +15,48 @@ from .analyze import stats
 BASE = Path(__file__).resolve().parents[1]
 DATA_DIR = BASE / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _median_price(items):
+    vals = []
+    for x in items:
+        try:
+            v = float(x.get("price"))
+            if v > 0:
+                vals.append(v)
+        except (TypeError, ValueError):
+            pass
+    return statistics.median(vals) if vals else None
+
+
+def _balanced_market_offers(accepted_market, accepted_other):
+    """Return one representative price per independent market source.
+
+    Main marketplaces are one source each; every independent other-UA host is
+    another source. Multiple listings from one source are collapsed to the
+    median so one marketplace cannot dominate the market statistics.
+    """
+    groups = {}
+    for x in accepted_market:
+        key = ("marketplace", x.get("marketplace") or "")
+        groups.setdefault(key, []).append(x)
+    for x in accepted_other:
+        key = ("other", x.get("host") or x.get("url") or "")
+        groups.setdefault(key, []).append(x)
+
+    reps = []
+    for (kind, name), items in groups.items():
+        med = _median_price(items)
+        if med is None:
+            continue
+        reps.append({
+            "price": med,
+            "marketplace": name if kind == "marketplace" else "Інші магазини",
+            "host": name if kind == "other" else "",
+            "source_kind": kind,
+            "source_name": name,
+        })
+    return reps
 
 
 def _clean_title_for_search(title, brand="", max_words=8):
@@ -54,7 +97,7 @@ def _cascade_queries(row, primary_query, max_queries=3):
     return queries[:max(1, int(max_queries))]
 
 
-def _merge_grouped_hits(target, incoming, domains, limit_per_domain):
+def _merge_grouped_hits(target, incoming, domains, limit_per_domain, other_limit=8):
     for domain in domains:
         current = target.setdefault(domain, [])
         seen = {x.get("url") for x in current}
@@ -75,7 +118,7 @@ def _merge_grouped_hits(target, incoming, domains, limit_per_domain):
             continue
         other_current.append(hit)
         other_seen.add(url)
-        if len(other_current) >= 20:
+        if len(other_current) >= other_limit:
             break
     return target
 
@@ -167,6 +210,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                     stage_hits,
                     domains,
                     cfg["max_results_per_marketplace"],
+                    cfg.get("other_ua_shops_max_hits", 8),
                 )
                 total_unique = sum(len(grouped_hits.get(d, [])) for d in domains)
                 other_unique = len(grouped_hits.get("__other__", []))
@@ -428,9 +472,15 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
             accepted_other.append(final_other)
             log(f"  OTHER ACCEPT: {host} price={chosen_price} source={price_source} match={match:.1f}")
 
-        st = stats(accepted, row.get("Цена"))
+        # v0.8 BALANCED MARKET: one representative median price per independent
+        # marketplace/host. This prevents 5 Prom listings from outweighing one
+        # Rozetka listing, while validated other-UA shops can now influence the
+        # market statistics and verdict.
+        balanced_offers = _balanced_market_offers(accepted, accepted_other)
+        st = stats(balanced_offers, row.get("Цена"))
 
-        if not accepted and suspicious_prices:
+        all_suspicious = suspicious_prices + suspicious_other
+        if not balanced_offers and all_suspicious:
             st["verdict"] = "⚠️ ЦІНА НЕ ПІДТВЕРДЖЕНА"
 
         own_price = row.get("Цена")
@@ -455,37 +505,40 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                 f"{p:.2f}".rstrip("0").rstrip(".") for p in prices
             )
 
-        # Count competitor offers with exactly the same price as ours.
+        # Count competitor offers with the same price as ours across the whole
+        # validated market (main marketplaces + other UA shops).
         same_price_count = 0
+        raw_valid_offers = accepted + accepted_other
         try:
             own_price_num = float(row.get("Цена")) if row.get("Цена") not in (None, "") else None
             if own_price_num is not None:
                 same_price_count = sum(
-                    1 for x in accepted
+                    1 for x in raw_valid_offers
                     if x.get("price") is not None
                     and abs(float(x["price"]) - own_price_num) <= float(cfg.get("same_price_tolerance_uah", 1.0))
                 )
         except (TypeError, ValueError):
             same_price_count = 0
 
-        sellers_found = len(accepted)
-        if sellers_found >= 4:
+        sellers_found = len(raw_valid_offers)
+        market_sources = len(balanced_offers)
+        if market_sources >= 4:
             market_confidence = "Висока"
-        elif sellers_found >= 2:
+        elif market_sources >= 2:
             market_confidence = "Середня"
-        elif sellers_found == 1:
+        elif market_sources == 1:
             market_confidence = "Низька"
         else:
             market_confidence = "Немає даних"
 
-        # Do not issue the strongest recommendation from only one market offer.
-        if sellers_found == 1 and st.get("verdict") == "🔥 РЕКЛАМУВАТИ":
+        # Do not issue the strongest recommendation from only one independent source.
+        if market_sources == 1 and st.get("verdict") == "🔥 РЕКЛАМУВАТИ":
             st["verdict"] = "🟡 ТЕСТУВАТИ"
 
         log(
             f"PRODUCT RESULT: accepted={len(accepted)} suspicious={len(suspicious_prices)} "
             f"other_accepted={len(accepted_other)} other_suspicious={len(suspicious_other)} "
-            f"same_price={same_price_count} min={st['min_price']} median={st['median']} "
+            f"balanced_sources={market_sources} same_price={same_price_count} min={st['min_price']} median={st['median']} "
             f"reserve={market_reserve_uah} reserve_pct={market_reserve_pct} "
             f"score={st['price_score']} verdict={st['verdict']}"
         )
@@ -501,7 +554,8 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
             "Медіана": st["median"],
             "Середня": round(st["avg"], 2) if st["avg"] is not None else None,
             "MAX": st["max_price"],
-            "Пропозицій": st["offers_count"],
+            "Пропозицій": sellers_found,
+            "Джерел ринку": market_sources,
         }
         for mp in market_cfg:
             report_row[mp["name"]] = marketplace_prices.get(mp["name"], "")
@@ -522,7 +576,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
             "Найдено продавців": sellers_found,
             "= моїй ціні": same_price_count,
             "Достовірність": market_confidence,
-            "Підозрілих цін": len(suspicious_prices),
+            "Підозрілих цін": len(all_suspicious),
             "Запас, грн": market_reserve_uah,
             "Запас, %": market_reserve_pct,
             "Score": st["price_score"],
@@ -537,10 +591,11 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
 
     verdict_order = {
         "🔥 РЕКЛАМУВАТИ": 0,
-        "🟡 ТЕСТУВАТИ": 1,
-        "⚠️ ЦІНА НЕ ПІДТВЕРДЖЕНА": 2,
-        "🔴 НЕ РЕКЛАМУВАТИ": 3,
-        "⚪ НЕ ЗНАЙДЕНО": 4,
+        "🟢 ПЕРСПЕКТИВНИЙ": 1,
+        "🟡 ТЕСТУВАТИ": 2,
+        "⚠️ ЦІНА НЕ ПІДТВЕРДЖЕНА": 3,
+        "🔴 НЕ РЕКЛАМУВАТИ": 4,
+        "⚪ НЕ ЗНАЙДЕНО": 5,
     }
     results.sort(
         key=lambda r: (
@@ -570,9 +625,13 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
     for r in results:
         counts[r["Вердикт"]] = counts.get(r["Вердикт"], 0) + 1
 
+    serper_usd_per_1000 = float(cfg.get("serper_usd_per_1000", 1.0))
+    serper_cost_usd = round(searcher.api_requests * serper_usd_per_1000 / 1000.0, 4)
+    api_per_product = round(searcher.api_requests / len(results), 3) if results else 0
     log(
         f"DONE products={len(results)} offers={len(offer_rows)} verdicts={counts} "
-        f"serper_api_requests={searcher.api_requests} serper_cache_hits={searcher.cache_hits} canceled={canceled}"
+        f"serper_api_requests={searcher.api_requests} serper_cache_hits={searcher.cache_hits} "
+        f"serper_cost_usd={serper_cost_usd:.4f} api_per_product={api_per_product} canceled={canceled}"
     )
     return {
         "products": len(results),
@@ -580,5 +639,8 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
         "verdicts": counts,
         "serper_api_requests": searcher.api_requests,
         "serper_cache_hits": searcher.cache_hits,
+        "serper_cost_usd": serper_cost_usd,
+        "serper_usd_per_1000": serper_usd_per_1000,
+        "api_per_product": api_per_product,
         "canceled": canceled,
     }
