@@ -1,0 +1,8 @@
+<!doctype html><html lang="uk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PriceIntel</title><link rel="stylesheet" href="/static/app.css"></head>
+<body><main class="wrap"><section class="hero"><div class="badge">PRICE INTELLIGENCE • MVP v0.2</div><h1>Знайди товари, на які варто лити рекламу.</h1><p>Завантаж CSV постачальника. PriceIntel порівняє твою ціну з ринком, відфільтрує схожі товари та поставить Price Score.</p></section>
+<section class="card"><form action="/analyze" method="post" enctype="multipart/form-data">
+<label class="drop"><input type="file" name="catalog" accept=".csv" required><span class="drop-title">📄 Вибрати CSV-файл</span><span class="muted">Підтримується формат твого постачальника</span></label>
+<div class="grid"><label>Скільки товарів аналізувати зараз?<input name="limit" type="number" value="30" min="1" max="5000"></label><div><div class="label">Маркетплейси</div><div class="checks">{% for m in marketplaces %}<label><input type="checkbox" name="marketplaces" value="{{m.name}}" checked> {{m.name}}</label>{% endfor %}</div></div></div>
+<button class="primary" type="submit">🚀 Почати аналіз</button><p class="hint">Для MVP краще починати з 30–100 товарів. Після перевірки якості збігів масштабуємо черги на сотні тисяч.</p>
+</form></section>
+<section class="mini"><div><b>MIN / MEDIAN / AVG / MAX</b><span>ринкова статистика</span></div><div><b>Match Score</b><span>відсіювання чужих моделей</span></div><div><b>Price Score 0–100</b><span>готовий пріоритет реклами</span></div></section></main></body></html>

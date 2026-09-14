@@ -1,8 +1,27 @@
-# pytest cache directory #
+# PriceIntel Web MVP v0.2
 
-This directory contains data from the pytest's cache plugin,
-which provides the `--lf` and `--ff` options, as well as the `cache` fixture.
+Браузерна версія PriceIntel. На комп'ютері користувача нічого встановлювати не потрібно після розміщення застосунку на сервері.
 
-**Do not** commit this to version control.
+## Що вміє
+- приймає CSV постачальника;
+- читає колонки: Код товара, Категория, Артикул, Название, Цена, Наличие, Производитель;
+- шукає товари на Rozetka, Prom, Epicentr, Allo, Foxtrot, Comfy;
+- fuzzy matching за назвою/брендом/артикулом;
+- рахує MIN / MEDIAN / AVG / MAX, різницю до медіани та Price Score;
+- показує прогрес у браузері;
+- дає скачати основний CSV та детальні пропозиції конкурентів.
 
-See [the docs](https://docs.pytest.org/en/stable/how-to/cache.html) for more information.
+## Запуск на сервері через Docker
+```bash
+docker build -t priceintel .
+docker run -p 8080:8080 priceintel
+```
+Після цього відкрити `http://SERVER_IP:8080`.
+
+## Render
+У репозиторії є `render.yaml` та `Dockerfile`. Створіть Web Service з цього репозиторію — збірка піде через Docker.
+
+## Важливо про MVP
+Поточна версія використовує пошукову видачу DuckDuckGo як discovery-шар і потім читає публічні сторінки товарів. Маркетплейси можуть змінювати HTML, обмежувати автоматичні запити або повертати CAPTCHA. Для 400 000 товарів наступна версія повинна мати окрему чергу завдань, проксі/ліміти відповідно до правил джерел, централізовану БД, історію цін та планувальник повторних перевірок.
+
+На MVP ставте 30–100 товарів для перевірки якості матчінгу. Серверний ліміт керується `MAX_PRODUCTS_PER_JOB`.
