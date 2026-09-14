@@ -18,6 +18,7 @@ ALLOWED_EXTENSIONS = {"csv"}
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "120"))
 
 app = Flask(__name__)
+print("[PRICEINTEL] Serper API key configured:", bool(os.getenv("SERPER_API_KEY")), flush=True)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
 
 _jobs = {}

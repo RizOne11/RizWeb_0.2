@@ -1,36 +1,33 @@
-# PriceIntel Web MVP v0.2
+# PriceIntel Web v0.3 — Serper
 
-Браузерна версія PriceIntel. На комп'ютері користувача нічого встановлювати не потрібно після розміщення застосунку на сервері.
+Ця версія замінює HTML-парсинг DuckDuckGo/Bing на Serper Google Search API.
 
-## Що вміє
-- приймає CSV постачальника;
-- читає колонки: Код товара, Категория, Артикул, Название, Цена, Наличие, Производитель;
-- шукає товари на Rozetka, Prom, Epicentr, Allo, Foxtrot, Comfy;
-- fuzzy matching за назвою/брендом/артикулом;
-- рахує MIN / MEDIAN / AVG / MAX, різницю до медіани та Price Score;
-- показує прогрес у браузері;
-- дає скачати основний CSV та детальні пропозиції конкурентів.
+## Що змінилось
+- 1 Serper search-запит на 1 товар.
+- Один запит шукає одразу по Rozetka, Prom, Epicentr, Allo, Foxtrot і Comfy.
+- Результати розкладаються по маркетплейсах локально.
+- Далі програма відкриває знайдені сторінки, витягує ціну та застосовує Match Score.
+- Детальні логи залишені для тестування.
 
-## Запуск на сервері через Docker
-```bash
-docker build -t priceintel .
-docker run -p 8080:8080 priceintel
-```
-Після цього відкрити `http://SERVER_IP:8080`.
+## Налаштування Render
+1. Render -> твій Web Service -> Environment.
+2. Add Environment Variable.
+3. Name: `SERPER_API_KEY`
+4. Value: твій ключ із Serper.
+5. Save Changes.
+6. Render зробить redeploy (або Manual Deploy -> Deploy latest commit).
 
-## Render
-У репозиторії є `render.yaml` та `Dockerfile`. Створіть Web Service з цього репозиторію — збірка піде через Docker.
+**Не додавай API key у GitHub і не надсилай його в чат.**
 
-## Важливо про MVP
-Поточна версія використовує пошукову видачу DuckDuckGo як discovery-шар і потім читає публічні сторінки товарів. Маркетплейси можуть змінювати HTML, обмежувати автоматичні запити або повертати CAPTCHA. Для 400 000 товарів наступна версія повинна мати окрему чергу завдань, проксі/ліміти відповідно до правил джерел, централізовану БД, історію цін та планувальник повторних перевірок.
+## Тест
+Почни з 5 товарів. У Render Logs має бути:
+- `Serper API key configured: True`
+- `SERPER QUERY: ...`
+- `SERPER HTTP 200`
+- `SERPER ORGANIC: ... result(s)`
+- `SERPER rozetka.com.ua: ... hit(s)` тощо.
 
-На MVP ставте 30–100 товарів для перевірки якості матчінгу. Серверний ліміт керується `MAX_PRODUCTS_PER_JOB`.
+Якщо пошукові результати є, але пропозицій 0 — наступний етап проблеми вже у fetch/extract/match, і лог покаже конкретну причину.
 
-
-## v0.2.2
-Покращено завантаження CSV: видиме підтвердження вибору файлу, drag-and-drop, перевірка розширення.
-
-## v0.2.3 DEBUG
-- Detailed Render stdout logs for every product, marketplace, HTTP request, extraction and match decision.
-- Search fallbacks: DuckDuckGo HTML -> DuckDuckGo Lite -> Bing.
-- More browser-like request headers.
+## Ліміти
+Безкоштовні 2,500 Serper queries ≈ до 2,500 товарів у цій архітектурі (по одному search-запиту на товар), не рахуючи повторних запусків.

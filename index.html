@@ -1,8 +1,121 @@
-<!doctype html><html lang="uk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PriceIntel</title><link rel="stylesheet" href="/static/app.css"></head>
-<body><main class="wrap"><section class="hero"><div class="badge">PRICE INTELLIGENCE • MVP v0.2</div><h1>Знайди товари, на які варто лити рекламу.</h1><p>Завантаж CSV постачальника. PriceIntel порівняє твою ціну з ринком, відфільтрує схожі товари та поставить Price Score.</p></section>
-<section class="card"><form action="/analyze" method="post" enctype="multipart/form-data">
-<label class="drop"><input type="file" name="catalog" accept=".csv" required><span class="drop-title">📄 Вибрати CSV-файл</span><span class="muted">Підтримується формат твого постачальника</span></label>
-<div class="grid"><label>Скільки товарів аналізувати зараз?<input name="limit" type="number" value="30" min="1" max="5000"></label><div><div class="label">Маркетплейси</div><div class="checks">{% for m in marketplaces %}<label><input type="checkbox" name="marketplaces" value="{{m.name}}" checked> {{m.name}}</label>{% endfor %}</div></div></div>
-<button class="primary" type="submit">🚀 Почати аналіз</button><p class="hint">Для MVP краще починати з 30–100 товарів. Після перевірки якості збігів масштабуємо черги на сотні тисяч.</p>
-</form></section>
-<section class="mini"><div><b>MIN / MEDIAN / AVG / MAX</b><span>ринкова статистика</span></div><div><b>Match Score</b><span>відсіювання чужих моделей</span></div><div><b>Price Score 0–100</b><span>готовий пріоритет реклами</span></div></section></main></body></html>
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PriceIntel</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<main class="wrap">
+  <section class="hero">
+    <div class="badge">PRICE INTELLIGENCE • MVP v0.3 • SERPER.3 DEBUG</div>
+    <h1>Знайди товари, на які варто лити рекламу.</h1>
+    <p>Завантаж CSV постачальника. PriceIntel порівняє твою ціну з ринком, відфільтрує схожі товари та поставить Price Score.</p>
+  </section>
+
+  <section class="card">
+    <form action="/analyze" method="post" enctype="multipart/form-data" id="analysis-form">
+      <label class="drop" id="drop-zone" for="catalog-input">
+        <input id="catalog-input" type="file" name="catalog" accept=".csv,text/csv" required>
+        <span class="drop-title" id="drop-title">📄 Вибрати CSV-файл</span>
+        <span class="muted" id="file-status">Натисни сюди або перетягни CSV у це поле</span>
+        <span class="file-pill hidden" id="file-pill"></span>
+      </label>
+
+      <div class="grid">
+        <label>Скільки товарів аналізувати зараз?
+          <input name="limit" type="number" value="5" min="1" max="5000">
+        </label>
+        <div>
+          <div class="label">Маркетплейси</div>
+          <div class="checks">
+            {% for m in marketplaces %}
+              <label><input type="checkbox" name="marketplaces" value="{{m.name}}" checked> {{m.name}}</label>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+
+      <button class="primary" id="submit-btn" type="submit">🚀 Почати аналіз</button>
+      <p class="hint">Для першого live-тесту залиш 5 товарів. Після перевірки якості збігів масштабуємо.</p>
+    </form>
+  </section>
+
+  <section class="mini">
+    <div><b>MIN / MEDIAN / AVG / MAX</b><span>ринкова статистика</span></div>
+    <div><b>Match Score</b><span>відсіювання чужих моделей</span></div>
+    <div><b>Price Score 0–100</b><span>готовий пріоритет реклами</span></div>
+  </section>
+</main>
+
+<script>
+(() => {
+  const input = document.getElementById('catalog-input');
+  const drop = document.getElementById('drop-zone');
+  const title = document.getElementById('drop-title');
+  const status = document.getElementById('file-status');
+  const pill = document.getElementById('file-pill');
+  const form = document.getElementById('analysis-form');
+  const submit = document.getElementById('submit-btn');
+
+  function formatSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+  }
+
+  function showFile(file) {
+    if (!file) return;
+    const isCsv = file.name.toLowerCase().endsWith('.csv');
+    if (!isCsv) {
+      input.value = '';
+      drop.classList.remove('has-file');
+      drop.classList.add('bad-file');
+      title.textContent = '⚠️ Потрібен CSV-файл';
+      status.textContent = 'Обраний файл має інше розширення.';
+      pill.classList.add('hidden');
+      return;
+    }
+    drop.classList.remove('bad-file');
+    drop.classList.add('has-file');
+    title.textContent = '✅ CSV вибрано';
+    status.textContent = 'Можна запускати аналіз';
+    pill.textContent = file.name + ' • ' + formatSize(file.size);
+    pill.classList.remove('hidden');
+  }
+
+  input.addEventListener('change', () => showFile(input.files[0]));
+
+  ['dragenter','dragover'].forEach(evt => drop.addEventListener(evt, e => {
+    e.preventDefault();
+    drop.classList.add('dragging');
+  }));
+  ['dragleave','drop'].forEach(evt => drop.addEventListener(evt, e => {
+    e.preventDefault();
+    drop.classList.remove('dragging');
+  }));
+  drop.addEventListener('drop', e => {
+    const files = e.dataTransfer.files;
+    if (!files || !files.length) return;
+    const dt = new DataTransfer();
+    dt.items.add(files[0]);
+    input.files = dt.files;
+    showFile(files[0]);
+  });
+
+  form.addEventListener('submit', e => {
+    if (!input.files.length) {
+      e.preventDefault();
+      drop.classList.add('bad-file');
+      title.textContent = '⚠️ Спочатку вибери CSV';
+      status.textContent = 'Файл ще не додано.';
+      return;
+    }
+    submit.disabled = true;
+    submit.textContent = '⏳ Завантажуємо файл…';
+  });
+})();
+</script>
+</body>
+</html>
