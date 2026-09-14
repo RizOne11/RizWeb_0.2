@@ -10,6 +10,7 @@ from flask import Flask, abort, jsonify, render_template, request, send_file, ur
 from werkzeug.utils import secure_filename
 
 from priceintel.runner import run_analysis
+from priceintel.report_xlsx import build_xlsx
 
 BASE = Path(__file__).resolve().parent
 JOBS_DIR = BASE / "data" / "jobs"
@@ -60,6 +61,7 @@ def worker(job_id, input_path, limit, selected_markets, supplier):
     job_dir = JOBS_DIR / job_id
     results_path = job_dir / "market_analysis.csv"
     offers_path = job_dir / "market_analysis_offers.csv"
+    xlsx_path = job_dir / "market_analysis.xlsx"
 
     def progress(current, total, name, extra=None):
         pct = round(current / total * 100, 1) if total else 0
@@ -83,14 +85,15 @@ def worker(job_id, input_path, limit, selected_markets, supplier):
             cancel_cb=cancel_requested,
             supplier=supplier,
         )
+        build_xlsx(str(results_path), str(xlsx_path))
         if summary.get("canceled"):
             set_job(job_id, status="canceled", message="Аналіз зупинено користувачем",
                     finished_at=time.time(), summary=summary,
-                    results_file=str(results_path), offers_file=str(offers_path))
+                    results_file=str(results_path), offers_file=str(offers_path), xlsx_file=str(xlsx_path))
         else:
             set_job(job_id, status="done", percent=100, message="Готово",
                     finished_at=time.time(), summary=summary,
-                    results_file=str(results_path), offers_file=str(offers_path))
+                    results_file=str(results_path), offers_file=str(offers_path), xlsx_file=str(xlsx_path))
     except Exception as e:
         log(f"FATAL {type(e).__name__}: {e}")
         set_job(job_id, status="error", message=str(e), finished_at=time.time())
@@ -151,6 +154,7 @@ def job_status(job_id):
     safe = {k: v for k, v in job.items() if k not in {"results_file", "offers_file"}}
     if job.get("status") in {"done", "canceled"}:
         safe["results_url"] = url_for("download_results", job_id=job_id)
+        safe["xlsx_url"] = url_for("download_xlsx", job_id=job_id)
         safe["offers_url"] = url_for("download_offers", job_id=job_id)
         safe["preview_url"] = url_for("preview", job_id=job_id)
     return jsonify(safe)
@@ -181,6 +185,18 @@ def preview(job_id):
             if i >= 199:
                 break
     return render_template("preview.html", job=job, rows=rows)
+
+
+
+@app.get("/jobs/<job_id>/xlsx")
+def download_xlsx(job_id):
+    job = get_job(job_id)
+    if not job or job.get("status") not in {"done", "canceled"}:
+        abort(404)
+    p = Path(job.get("xlsx_file") or "")
+    if not p.exists():
+        build_xlsx(job["results_file"], p)
+    return send_file(p, as_attachment=True, download_name="PriceIntel_market_report.xlsx")
 
 
 @app.get("/jobs/<job_id>/results")

@@ -51,3 +51,12 @@
 - If a product has only suspicious prices, verdict becomes `⚠️ ЦІНА НЕ ПІДТВЕРДЖЕНА`.
 - Main report includes `Підозрілих цін`.
 - Offers report includes `Статус цены` and `Причина проверки`.
+
+## v0.5.0 — Market report
+- Verdict moved to the first column.
+- AVG renamed to `Середня`.
+- Added separate columns with all valid prices found on Rozetka, Prom, Epicentr, Allo, Foxtrot and Comfy.
+- Added `= моїй ціні`: count of valid competitor offers exactly equal to the supplier/own price.
+- Main report is sorted: РЕКЛАМУВАТИ → ТЕСТУВАТИ → ЦІНА НЕ ПІДТВЕРДЖЕНА → НЕ РЕКЛАМУВАТИ → НЕ ЗНАЙДЕНО.
+- Added styled Excel export with the same column order as the browser report.
+- CSV and detailed competitor offers export remain available.
