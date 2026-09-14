@@ -27,6 +27,21 @@ def _price_from_text(text):
     return _price_num(m.group(1)) if m else None
 
 
+def _serper_safe_query(query):
+    """Normalize queries for Serper free-tier compatibility.
+
+    Free accounts may reject quoted phrases, site: operators and negative quoted
+    exclusions. PUMA applies marketplace/domain filtering locally, so these
+    operators are not required for correctness.
+    """
+    q = " ".join(str(query or "").split()).strip()
+    q = re.sub(r'(?:^|\s)site:[^\s]+', ' ', q, flags=re.I)
+    q = re.sub(r'(?:^|\s)-["“”][^"“”]+["“”]', ' ', q)
+    q = re.sub(r'(?:^|\s)-[^\s]+', ' ', q)
+    q = q.replace('"', ' ').replace('“', ' ').replace('”', ' ').replace('`', ' ')
+    return " ".join(q.split()).strip()
+
+
 def _canonical_url(url):
     """Normalize tracking noise without collapsing real product selector params."""
     try:
@@ -125,6 +140,7 @@ class SerperSearch:
         self.api_requests = 0
         self.cache_hits = 0
         self.last_error = ""
+        self.disabled_reason = ""
 
         self.s = requests.Session()
         self.s.headers.update({
@@ -146,6 +162,8 @@ class SerperSearch:
         return "serper:v125:" + simple_query.lower() + ":" + ",".join(sorted(d.lower() for d in domains))
 
     def _request(self, simple_query, domains):
+        if self.disabled_reason:
+            return None
         self.last_error = ""
         cache_key = self._cache_key(simple_query, domains)
         if self.cache:
@@ -179,6 +197,9 @@ class SerperSearch:
             body = r.text[:500]
             self.last_error = f"HTTP {r.status_code}: {body}"
             self.log(f"SERPER BODY: {body}")
+            if r.status_code == 400 and "query pattern not allowed" in body.lower():
+                self.disabled_reason = "FREE_ACCOUNT_QUERY_PATTERN_BLOCK"
+                self.log("SERPER CIRCUIT BREAKER: free-account query pattern rejected; disabling Serper for this run")
             return None
 
         try:
@@ -199,7 +220,12 @@ class SerperSearch:
         if not self.api_key:
             return _empty_grouped(domains)
 
-        simple_query = " ".join(str(query or "").split()).strip() if exact_query else self._extract_identifier(query)
+        raw_query = " ".join(str(query or "").split()).strip() if exact_query else self._extract_identifier(query)
+        simple_query = _serper_safe_query(raw_query)
+        if not simple_query:
+            return _empty_grouped(domains)
+        if simple_query != raw_query:
+            self.log(f"SERPER SAFE QUERY: {raw_query!r} -> {simple_query!r}")
         data = self._request(simple_query, domains)
         grouped = _empty_grouped(domains)
         if not data:
@@ -247,6 +273,7 @@ class FirecrawlSearch:
         self.location = location
         self.api_requests = 0
         self.last_error = ""
+        self.disabled_reason = ""
         self.s = requests.Session()
         self.s.headers.update({"Content-Type": "application/json", "Accept": "application/json"})
         if self.api_key:
@@ -254,7 +281,16 @@ class FirecrawlSearch:
 
     @property
     def enabled(self):
-        return bool(self.api_key) or self.allow_keyless
+        return not self.disabled_reason and (bool(self.api_key) or self.allow_keyless)
+
+    def _disable_for_auth(self, status_code, body):
+        text = str(body or "")
+        if status_code in (401, 403):
+            if not self.api_key:
+                self.disabled_reason = "API_KEY_REQUIRED_FROM_RENDER"
+            else:
+                self.disabled_reason = "API_KEY_REJECTED"
+            self.log(f"FIRECRAWL CIRCUIT BREAKER: {self.disabled_reason}; disabling Firecrawl for this run")
 
     def search(self, query, domains=None, limit=20):
         if not self.enabled:
@@ -275,6 +311,7 @@ class FirecrawlSearch:
             if r.status_code >= 400:
                 self.last_error = f"HTTP {r.status_code}: {r.text[:400]}"
                 self.log(f"FIRECRAWL SEARCH ERROR: {self.last_error}")
+                self._disable_for_auth(r.status_code, r.text[:400])
                 return []
             data = r.json()
         except Exception as e:
@@ -368,6 +405,7 @@ class FirecrawlSearch:
             self.log(f"FIRECRAWL VERIFY HTTP {r.status_code} len={len(r.content)}")
             if r.status_code >= 400:
                 self.log(f"FIRECRAWL VERIFY ERROR: {r.text[:400]}")
+                self._disable_for_auth(r.status_code, r.text[:400])
                 return None
             data = r.json().get("data") or {}
             obj = data.get("json") if isinstance(data, dict) else None
@@ -461,7 +499,7 @@ class ExaSearch:
 
 
 class HybridSearch:
-    """PUMA v1.2.5 discovery orchestrator.
+    """PUMA v1.2.5.1 discovery orchestrator.
 
     Targeted marketplace queries: Firecrawl native domain filter first, then Exa,
     then Serper only as a fallback. Broad Ukraine discovery: Firecrawl + Serper +

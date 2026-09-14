@@ -220,8 +220,17 @@ def classify_match(row, candidate_title: str, candidate_url: str = "", candidate
     model_bonus = min(20, len(matched_models) * 10)
     score = min(99.0, base + brand_bonus + model_bonus + sku_bonus)
 
+    # A strong public manufacturer model/MPN can prove identity even when a
+    # marketplace uses a sub-brand (e.g. Redmi instead of Xiaomi) or omits the
+    # parent brand. Explicit variant conflicts above still veto the match.
+    strong_public_model = any(
+        compact(m) in hay_c and ("-" in str(m) or len(compact(m)) >= 6)
+        for m in fp["models"]
+    )
+
     strong_identity = (
         base >= 94
+        or (strong_public_model and base >= 70)
         or (brand_present and base >= 86)
         or (brand_present and matched_models and base >= 78)
         or (sku_distinctive and supplier_sku_hit and (brand_present or base >= 84 or matched_models))
