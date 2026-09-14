@@ -3,15 +3,16 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>PriceIntel — результат</title>
+  <title>PUMA Platform {{app_version}} — результат</title>
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
 <main class="wide">
   <header class="top">
     <div>
-      <div class="badge">РЕЗУЛЬТАТ</div>
+      <div class="badge">РЕЗУЛЬТАТ • {{app_version}}</div>
       <h1>Що рекламувати</h1>
+      <div class="muted">{{brand_line}}</div>
     </div>
     <div class="actions">
       <a class="secondary link" href="/jobs/{{job.id}}/offers">Пропозиції</a>
@@ -22,9 +23,9 @@
   <div class="table-wrap">
     <table>
       <thead><tr>
-        <th>Вердикт</th><th>Товар</th><th>Категорія</th><th>Постачальник</th>
-        <th>Артикул</th><th>Твоя ціна</th><th>MIN</th><th>Медіана</th>
-        <th>Середня</th><th>MAX</th><th>Пропозицій</th>
+        <th>Вердикт</th><th>Причина</th><th>Товар</th><th>Категорія</th><th>Постачальник</th>
+        <th>Артикул</th><th>Стара ціна</th><th>Знижка, %</th><th>Твоя ціна</th><th>MIN</th><th>Медіана</th>
+        <th>Середня</th><th>MAX</th><th>Пропозицій</th><th>Джерел ринку</th>
         <th>Rozetka</th><th>Prom</th><th>Epicentr</th><th>Allo</th><th>Foxtrot</th><th>Comfy</th><th>Kasta</th><th>Hotline</th>
         <th>Інші магазини</th><th>Магазини</th><th>Пропозицій інших магазинів</th><th>Найдено продавців</th><th>= моїй ціні</th><th>Достовірність</th><th>Підозрілих цін</th><th>Запас, грн</th><th>Запас, %</th><th>Score</th>
       </tr></thead>
@@ -32,32 +33,21 @@
       {% for r in rows %}
       <tr>
         <td class="verdict">{{r.get('Вердикт','')}}</td>
-        <td>{{r.get('Товар','')}}</td>
-        <td>{{r.get('Категорія','')}}</td>
-        <td>{{r.get('Постачальник','')}}</td>
-        <td>{{r.get('Артикул','')}}</td>
-        <td>{{r.get('Твоя ціна','')}}</td>
-        <td>{{r.get('MIN','')}}</td>
-        <td>{{r.get('Медіана','')}}</td>
-        <td>{{r.get('Середня','')}}</td>
-        <td>{{r.get('MAX','')}}</td>
-        <td>{{r.get('Пропозицій','')}}</td>
-        <td class="market-prices">{{r.get('Rozetka','')}}</td>
-        <td class="market-prices">{{r.get('Prom','')}}</td>
-        <td class="market-prices">{{r.get('Epicentr','')}}</td>
-        <td class="market-prices">{{r.get('Allo','')}}</td>
-        <td class="market-prices">{{r.get('Foxtrot','')}}</td>
-        <td class="market-prices">{{r.get('Comfy','')}}</td>
-        <td class="market-prices">{{r.get('Kasta','')}}</td>
-        <td class="market-prices">{{r.get('Hotline','')}}</td>
-        <td class="market-prices">{{r.get('Інші магазини','')}}</td>
-        <td class="market-prices">{{r.get('Магазини','')}}</td>
-        <td>{{r.get('Пропозицій інших магазинів','')}}</td>
-        <td>{{r.get('Найдено продавців','')}}</td>
-        <td><b>{{r.get('= моїй ціні','')}}</b></td>
-        <td>{{r.get('Достовірність','')}}</td>
-        <td>{{r.get('Підозрілих цін','')}}</td>
-        <td>{{r.get('Запас, грн','')}}</td>
+        <td>{{r.get('Причина вердикту','')}}</td>
+        <td>{{r.get('Товар','')}}</td><td>{{r.get('Категорія','')}}</td>
+        <td>{{r.get('Постачальник','')}}</td><td>{{r.get('Артикул','')}}</td>
+        <td>{{r.get('Стара ціна','')}}</td><td>{{r.get('Знижка, %','')}}</td><td>{{r.get('Твоя ціна','')}}</td><td>{{r.get('MIN','')}}</td>
+        <td>{{r.get('Медіана','')}}</td><td>{{r.get('Середня','')}}</td>
+        <td>{{r.get('MAX','')}}</td><td>{{r.get('Пропозицій','')}}</td>
+        <td><b>{{r.get('Джерел ринку','')}}</b></td>
+        <td class="market-prices">{{r.get('Rozetka','')}}</td><td class="market-prices">{{r.get('Prom','')}}</td>
+        <td class="market-prices">{{r.get('Epicentr','')}}</td><td class="market-prices">{{r.get('Allo','')}}</td>
+        <td class="market-prices">{{r.get('Foxtrot','')}}</td><td class="market-prices">{{r.get('Comfy','')}}</td>
+        <td class="market-prices">{{r.get('Kasta','')}}</td><td class="market-prices">{{r.get('Hotline','')}}</td>
+        <td class="market-prices">{{r.get('Інші магазини','')}}</td><td class="market-prices">{{r.get('Магазини','')}}</td>
+        <td>{{r.get('Пропозицій інших магазинів','')}}</td><td>{{r.get('Найдено продавців','')}}</td>
+        <td><b>{{r.get('= моїй ціні','')}}</b></td><td>{{r.get('Достовірність','')}}</td>
+        <td>{{r.get('Підозрілих цін','')}}</td><td>{{r.get('Запас, грн','')}}</td>
         <td>{{r.get('Запас, %','')}}{% if r.get('Запас, %') not in ['', None] %}%{% endif %}</td>
         <td><b>{{r.get('Score','')}}</b></td>
       </tr>
@@ -65,7 +55,8 @@
       </tbody>
     </table>
   </div>
-  <p class="muted">На екрані показано максимум 200 рядків. Повний результат — у Excel або CSV.</p>
+  <p class="muted">На екрані максимум 200 рядків. Повний результат — у Excel або CSV.</p>
+  <div class="actions"><a class="secondary link" href="/">PUMA Platform</a><a class="secondary link" href="/content">ПереводоПУМОгатель</a></div><footer class="brand-footer">{{brand_line}} • PUMA Platform {{app_version}}</footer>
 </main>
 </body>
 </html>

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ПереводоПУМОгатель — прев'ю</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<main class="wide">
+  <header class="top">
+    <div>
+      <div class="badge">CONTENT PREVIEW • {{app_version}}</div>
+      <h1>ПереводоПУМОгатель</h1>
+      <div class="muted">{{supplier}} • {{rows|length}} товарів у прев'ю</div>
+    </div>
+    <div class="actions">
+      <a class="secondary link" href="/content">← Новий файл</a>
+      <a class="secondary link" href="/analysis">доПУМАгатель</a>
+    </div>
+  </header>
+
+  <div class="content-list">
+    {% for r in rows %}
+    <article class="product-card">
+      <div class="product-card-main">
+        <div class="badge">НЕ ОБРОБЛЕНО</div>
+        <h2>{{r.get('Название') or 'Без назви'}}</h2>
+        <div class="sku-lock"><b>🔒 Артикул постачальника:</b> <code>{{r.get('Артикул','')}}</code></div>
+        <div class="product-meta">
+          <span>{{r.get('Производитель','')}}</span>
+          <span>{{r.get('Категория','')}}</span>
+          <span>{{r.get('Цена','')}} {{r.get('Валюта','UAH')}}</span>
+          {% if r.get('Старая цена') %}<span>Стара: {{r.get('Старая цена')}}</span>{% endif %}
+        </div>
+        <details>
+          <summary>Оригінальний опис</summary>
+          <div class="original-text">{{r.get('Описание текст') or r.get('Описание','')}}</div>
+        </details>
+        <details>
+          <summary>Характеристики ({{r.get('Параметры',[])|length}})</summary>
+          <div class="params-grid">
+            {% for p in r.get('Параметры',[])[:30] %}
+              {% if p is mapping %}<div><b>{{p.get('name','')}}</b><span>{{p.get('value','')}}</span></div>
+              {% else %}<div><span>{{p}}</span></div>{% endif %}
+            {% endfor %}
+          </div>
+        </details>
+      </div>
+      <aside class="ua-draft">
+        <div class="badge">УКРАЇНСЬКА ВЕРСІЯ</div>
+        <p class="muted">AI-переклад ще не підключений. Тут з'являться назва, опис, характеристики та SEO після додавання OpenAI API.</p>
+        <label>Назва UA<input type="text" readonly placeholder="Буде сформовано AI"></label>
+        <label>Статус<input type="text" readonly value="Не оброблено"></label>
+      </aside>
+    </article>
+    {% endfor %}
+  </div>
+  <footer class="brand-footer">{{brand_line}} • PUMA Platform {{app_version}}</footer>
+</main>
+</body>
+</html>

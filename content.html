@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ПереводоПУМОгатель — {{app_name}} {{app_version}}</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<main class="wrap">
+  <section class="hero">
+    <div class="badge">ПЕРЕВОДОПУМОГАТЕЛЬ • {{app_version}}</div>
+    <h1>Content Studio</h1>
+    <p>Перший фундамент модуля під український контент. YML вже читається як структурована картка товару; артикул працює під SKU Lock.</p>
+  </section>
+
+  <section class="card">
+    <form action="/content/preview" method="post" enctype="multipart/form-data">
+      <label class="drop" for="content-catalog">
+        <input id="content-catalog" type="file" name="catalog" accept=".yml,.xml,.csv,text/xml,application/xml,text/csv" required>
+        <span class="drop-title">📦 Вибрати YML / CSV</span>
+        <span class="muted">Для контенту рекомендуємо YML — він зберігає фото, HTML-опис та структуровані характеристики.</span>
+      </label>
+      <div class="grid">
+        <label>Постачальник
+          <input name="supplier" type="text" placeholder="Напр. Hubber" value="Hubber">
+        </label>
+        <label>Товарів у прев'ю
+          <input name="limit" type="number" value="20" min="1" max="200">
+        </label>
+      </div>
+      <button class="primary" type="submit">👀 Розібрати картки</button>
+    </form>
+  </section>
+
+  <section class="mini">
+    <div><b>SKU Lock</b><span>артикул тільки для читання</span></div>
+    <div><b>Original → UA</b><span>окремі поля оригіналу та майбутньої української версії</span></div>
+    <div><b>OpenCart Ready</b><span>наступний етап — експортер під OpenCart 4.1</span></div>
+  </section>
+
+  <div class="actions"><a class="secondary link" href="/">← PUMA Platform</a><a class="secondary link" href="/analysis">доПУМАгатель →</a></div>
+  <footer class="brand-footer">{{brand_line}} • {{app_name}} {{app_version}}</footer>
+</main>
+</body>
+</html>

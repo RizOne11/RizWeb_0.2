@@ -110,6 +110,7 @@
   "provider_recovery_min_hits": 2,
   "firecrawl_keyless_enabled": false,
   "serper_safe_query_mode": true,
+  "serper_supports_site_operator": true,
   "verify_candidates_per_marketplace": 8,
   "candidate_prefilter_score_without_mpn": 90,
   "firecrawl_min_interval_seconds": 6.2,
