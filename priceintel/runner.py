@@ -235,8 +235,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
             except (TypeError, ValueError):
                 pass
 
-        # Per-marketplace valid prices. We keep every accepted price we found,
-        # so e.g. Prom can show "249 / 349 / 444.98" in one report cell.
+        # Collect all VALID prices found per marketplace.
         marketplace_prices = {}
         for mp in market_cfg:
             prices = [
@@ -247,18 +246,25 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                 f"{p:.2f}".rstrip("0").rstrip(".") for p in prices
             )
 
+        # Count competitor offers with exactly the same price as ours.
         same_price_count = 0
         try:
             own_price_num = float(row.get("Цена")) if row.get("Цена") not in (None, "") else None
             if own_price_num is not None:
                 same_price_count = sum(
                     1 for x in accepted
-                    if x.get("price") is not None and abs(float(x["price"]) - own_price_num) < 0.01
+                    if x.get("price") is not None
+                    and abs(float(x["price"]) - own_price_num) < 0.01
                 )
         except (TypeError, ValueError):
             same_price_count = 0
 
-        log(f"PRODUCT RESULT: accepted={len(accepted)} suspicious={len(suspicious_prices)} same_price={same_price_count} min={st['min_price']} median={st['median']} reserve={market_reserve_uah} reserve_pct={market_reserve_pct} score={st['price_score']} verdict={st['verdict']}")
+        log(
+            f"PRODUCT RESULT: accepted={len(accepted)} suspicious={len(suspicious_prices)} "
+            f"same_price={same_price_count} min={st['min_price']} median={st['median']} "
+            f"reserve={market_reserve_uah} reserve_pct={market_reserve_pct} "
+            f"score={st['price_score']} verdict={st['verdict']}"
+        )
 
         report_row = {
             "Вердикт": st["verdict"],
@@ -275,6 +281,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
         }
         for mp in market_cfg:
             report_row[mp["name"]] = marketplace_prices.get(mp["name"], "")
+
         report_row.update({
             "= моїй ціні": same_price_count,
             "Підозрілих цін": len(suspicious_prices),
@@ -297,7 +304,12 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
         "🔴 НЕ РЕКЛАМУВАТИ": 3,
         "⚪ НЕ ЗНАЙДЕНО": 4,
     }
-    results.sort(key=lambda r: (verdict_order.get(r.get("Вердикт"), 99), -(r.get("Score") or 0)))
+    results.sort(
+        key=lambda r: (
+            verdict_order.get(r.get("Вердикт"), 99),
+            -(r.get("Score") or 0)
+        )
+    )
 
     fields = list(results[0].keys()) if results else []
     if results:

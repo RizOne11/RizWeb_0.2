@@ -89,11 +89,13 @@ def worker(job_id, input_path, limit, selected_markets, supplier):
         if summary.get("canceled"):
             set_job(job_id, status="canceled", message="Аналіз зупинено користувачем",
                     finished_at=time.time(), summary=summary,
-                    results_file=str(results_path), offers_file=str(offers_path), xlsx_file=str(xlsx_path))
+                    results_file=str(results_path), offers_file=str(offers_path),
+                    xlsx_file=str(xlsx_path))
         else:
             set_job(job_id, status="done", percent=100, message="Готово",
                     finished_at=time.time(), summary=summary,
-                    results_file=str(results_path), offers_file=str(offers_path), xlsx_file=str(xlsx_path))
+                    results_file=str(results_path), offers_file=str(offers_path),
+                    xlsx_file=str(xlsx_path))
     except Exception as e:
         log(f"FATAL {type(e).__name__}: {e}")
         set_job(job_id, status="error", message=str(e), finished_at=time.time())
@@ -151,11 +153,11 @@ def job_status(job_id):
     job = get_job(job_id)
     if not job:
         abort(404)
-    safe = {k: v for k, v in job.items() if k not in {"results_file", "offers_file"}}
+    safe = {k: v for k, v in job.items() if k not in {"results_file", "offers_file", "xlsx_file"}}
     if job.get("status") in {"done", "canceled"}:
         safe["results_url"] = url_for("download_results", job_id=job_id)
-        safe["xlsx_url"] = url_for("download_xlsx", job_id=job_id)
         safe["offers_url"] = url_for("download_offers", job_id=job_id)
+        safe["xlsx_url"] = url_for("download_xlsx", job_id=job_id)
         safe["preview_url"] = url_for("preview", job_id=job_id)
     return jsonify(safe)
 
@@ -195,7 +197,8 @@ def download_xlsx(job_id):
         abort(404)
     p = Path(job.get("xlsx_file") or "")
     if not p.exists():
-        build_xlsx(job["results_file"], p)
+        p = JOBS_DIR / job_id / "market_analysis.xlsx"
+        build_xlsx(job["results_file"], str(p))
     return send_file(p, as_attachment=True, download_name="PriceIntel_market_report.xlsx")
 
 
