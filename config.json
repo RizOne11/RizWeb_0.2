@@ -51,7 +51,8 @@
   "same_price_tolerance_uah": 1.0,
   "other_ua_shops_enabled": true,
   "other_ua_shops_affect_score": true,
-  "other_ua_shops_max_hits": 8,
+  "other_ua_shops_max_hits": 12,
   "serper_usd_per_1000": 1.0,
-  "serper_forecast_requests_per_product": 1.7
+  "serper_forecast_requests_per_product": 1.7,
+  "market_overprice_red_pct": 10.0
 }

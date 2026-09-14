@@ -97,7 +97,7 @@ def _cascade_queries(row, primary_query, max_queries=3):
     return queries[:max(1, int(max_queries))]
 
 
-def _merge_grouped_hits(target, incoming, domains, limit_per_domain, other_limit=8):
+def _merge_grouped_hits(target, incoming, domains, limit_per_domain, other_limit=12):
     for domain in domains:
         current = target.setdefault(domain, [])
         seen = {x.get("url") for x in current}
@@ -210,7 +210,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                     stage_hits,
                     domains,
                     cfg["max_results_per_marketplace"],
-                    cfg.get("other_ua_shops_max_hits", 8),
+                    cfg.get("other_ua_shops_max_hits", 12),
                 )
                 total_unique = sum(len(grouped_hits.get(d, [])) for d in domains)
                 other_unique = len(grouped_hits.get("__other__", []))
@@ -489,8 +489,11 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
         if st["median"] is not None and own_price not in (None, "", 0):
             try:
                 own_price_num = float(own_price)
-                market_reserve_uah = round(float(st["median"]) - own_price_num, 2)
-                market_reserve_pct = round((market_reserve_uah / own_price_num) * 100, 2) if own_price_num else None
+                market_median_num = float(st["median"])
+                market_reserve_uah = round(market_median_num - own_price_num, 2)
+                # v0.8.1: express reserve against the market median.
+                # Example: own 163998 vs market 104999 => about -56.19%.
+                market_reserve_pct = round((market_reserve_uah / market_median_num) * 100, 2) if market_median_num else None
             except (TypeError, ValueError):
                 pass
 
@@ -534,6 +537,27 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
         # Do not issue the strongest recommendation from only one independent source.
         if market_sources == 1 and st.get("verdict") == "🔥 РЕКЛАМУВАТИ":
             st["verdict"] = "🟡 ТЕСТУВАТИ"
+
+        # v0.8.1 VERDICT GUARD: if our price is materially above a reliable
+        # balanced market, advertising it is not rational even if the generic
+        # score calculation ever returns a softer verdict.
+        try:
+            own_num_guard = float(row.get("Цена")) if row.get("Цена") not in (None, "", 0) else None
+            med_num_guard = float(st.get("median")) if st.get("median") not in (None, "", 0) else None
+            overprice_red_pct = float(cfg.get("market_overprice_red_pct", 10.0))
+            if own_num_guard and med_num_guard and market_sources >= 2:
+                over_market_pct = ((own_num_guard - med_num_guard) / med_num_guard) * 100
+                if over_market_pct >= overprice_red_pct:
+                    previous_verdict = st.get("verdict")
+                    st["verdict"] = "🔴 НЕ РЕКЛАМУВАТИ"
+                    st["price_score"] = min(int(st.get("price_score") or 0), 39)
+                    log(
+                        f"VERDICT GUARD: own price is {over_market_pct:.2f}% above market "
+                        f"(threshold={overprice_red_pct:.2f}%, sources={market_sources}) "
+                        f"{previous_verdict} -> {st['verdict']}"
+                    )
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
 
         log(
             f"PRODUCT RESULT: accepted={len(accepted)} suspicious={len(suspicious_prices)} "
