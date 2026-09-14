@@ -58,8 +58,8 @@
   "page_fetch_workers": 6,
   "request_timeout_seconds": 12,
   "app_name": "PUMA Platform",
-  "app_version": "v1.2.3",
-  "release_name": "Universal Marketplace Search Matrix",
+  "app_version": "v1.2.4",
+  "release_name": "Page Verification + Multi-Offer Expansion",
   "brand_author": "Пума (Чернявський А.)",
   "brand_line": "Made by Пума (Чернявський А.)",
   "adaptive_search_enabled": false,
@@ -96,5 +96,7 @@
   "marketplace_search_matrix_max_queries": 8,
   "marketplace_search_matrix_run_all": true,
   "marketplace_candidate_pool_target": 5,
-  "marketplace_min_queries_before_stop": 2
+  "marketplace_min_queries_before_stop": 2,
+  "marketplace_candidate_expansion_queries": 2,
+  "marketplace_candidate_expansion_below": 2
 }

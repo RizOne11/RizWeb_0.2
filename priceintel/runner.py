@@ -316,6 +316,21 @@ def _merge_grouped_hits(target, incoming, domains, limit_per_domain, other_limit
     return target
 
 
+def _candidate_exclusion_tokens(hits, max_tokens=3):
+    """Extract URL-specific tokens so Google can surface alternate seller/listing URLs."""
+    out = []
+    for hit in hits or []:
+        url = str(hit.get("url") or "")
+        # Marketplace listing IDs are often the best exclusion token.
+        parts = re.findall(r"[A-Za-z]?\d{7,}|[mp]\d{6,}", url, re.I)
+        for part in parts:
+            if part not in out:
+                out.append(part)
+            if len(out) >= max_tokens:
+                return out
+    return out
+
+
 def _run_search_matrix(row, market_cfg, searcher, cfg, log):
     """Discover candidates for all configured marketplaces + Ukrainian shops.
 
@@ -379,6 +394,29 @@ def _run_search_matrix(row, market_cfg, searcher, cfg, log):
             except Exception as e:
                 marketplace_errors.add(name)
                 log(f"MARKETPLACE MATRIX ERROR {name} {idx}: {type(e).__name__}: {e}")
+        # C. Candidate expansion: if Google keeps returning the same listing,
+        # explicitly exclude known listing IDs and ask for another exact product.
+        # This is universal for all marketplaces and capped to protect Serper credits.
+        expansion_max = int(cfg.get("marketplace_candidate_expansion_queries", 2))
+        expansion_trigger = int(cfg.get("marketplace_candidate_expansion_below", 2))
+        if expansion_max > 0 and len(grouped.get(domain, [])) < expansion_trigger and matrix:
+            base_query = matrix[0]
+            for ex_idx in range(expansion_max):
+                tokens = _candidate_exclusion_tokens(grouped.get(domain, []), max_tokens=3)
+                exclusions = " ".join(f'-"{t}"' for t in tokens)
+                expansion_query = f"{base_query} site:{domain} {exclusions}".strip()
+                try:
+                    before = len(grouped.get(domain, []))
+                    hits = searcher.search_all(expansion_query, [domain], limit_per_domain=max_per_domain, exact_query=True)
+                    _merge_grouped_hits(grouped, {domain: hits.get(domain, []), "__other__": []}, domains, max_per_domain, other_limit)
+                    after = len(grouped.get(domain, []))
+                    log(f"MARKETPLACE EXPAND {name} {ex_idx+1}: q={expansion_query!r} {before}->{after}")
+                    if after >= expansion_trigger or after == before:
+                        break
+                except Exception as e:
+                    marketplace_errors.add(name)
+                    log(f"MARKETPLACE EXPAND ERROR {name}: {type(e).__name__}: {e}")
+                    break
         log(f"MARKETPLACE MATRIX DONE: {name} candidates={len(grouped.get(domain, []))}")
 
     return grouped, matrix, marketplace_errors
@@ -674,7 +712,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                 extracted_price = (prod or {}).get("price")
 
                 if prod:
-                    log(f"  EXTRACT: title={candidate_title[:140]!r} price={extracted_price} match={match:.1f}")
+                    log(f"  EXTRACT: title={candidate_title[:140]!r} price={extracted_price} source={(prod or {}).get('extract_source','unknown')} match={match:.1f}")
 
                 # Fallback: for blocked pages or pages without a parseable price,
                 # use a Serper price hint only when product matching is strong.
