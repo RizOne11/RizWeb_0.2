@@ -56,5 +56,12 @@
   "serper_forecast_requests_per_product": 1.7,
   "market_overprice_red_pct": 10.0,
   "page_fetch_workers": 6,
-  "request_timeout_seconds": 12
+  "request_timeout_seconds": 12,
+  "app_name": "PriceIntel",
+  "app_version": "v1.0",
+  "release_name": "Production Release",
+  "brand_author": "Пума (Чернявський А.)",
+  "brand_line": "Made by Пума (Чернявський А.)",
+  "adaptive_search_enabled": true,
+  "adaptive_min_candidate_sources": 4
 }

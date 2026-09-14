@@ -183,7 +183,7 @@ def _load_checkpoint(path, log):
         return None
 
 
-def _save_checkpoint(path, next_index, results, offer_rows, log):
+def _save_checkpoint(path, next_index, results, offer_rows, log, elapsed_seconds=0.0):
     if not path:
         return
     p = Path(path)
@@ -191,11 +191,12 @@ def _save_checkpoint(path, next_index, results, offer_rows, log):
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.with_suffix(p.suffix + ".tmp")
         payload = {
-            "version": "v0.9.0",
+            "version": "v1.0",
             "next_index": int(next_index),
             "results": results,
             "offer_rows": offer_rows,
             "saved_at": time.time(),
+            "elapsed_seconds": round(float(elapsed_seconds or 0.0), 3),
         }
         tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, p)
@@ -270,17 +271,39 @@ def _prefetch_pages(grouped_hits, cache, cfg, headers, log, cancel_cb=None):
     log(f"PREFETCH DONE: cached={ok} failed={failed}")
 
 
+
+def _candidate_source_count(grouped_hits, domains):
+    """Count independent candidate sources before page validation.
+
+    Each target marketplace counts once if it has at least one hit.
+    Every unique Other-UA host counts once.
+    """
+    sources = 0
+    for domain in domains:
+        if grouped_hits.get(domain):
+            sources += 1
+    other_hosts = {
+        (x.get("host") or "").strip().lower()
+        for x in grouped_hits.get("__other__", [])
+        if (x.get("host") or "").strip()
+    }
+    return sources + len(other_hosts)
+
+
 def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                  progress_cb=None, log_cb=None, cancel_cb=None, supplier="", checkpoint_path=None):
     log = log_cb or (lambda msg: None)
+    run_started = time.perf_counter()
     cfg = json.loads((BASE / "config.json").read_text(encoding="utf-8"))
+    app_version = str(cfg.get("app_version", "v1.0"))
+    brand_author = str(cfg.get("brand_author", "Пума (Чернявський А.)"))
     selected = set(marketplaces or [m["name"] for m in cfg["marketplaces"]])
     market_cfg = [m for m in cfg["marketplaces"] if m["name"] in selected]
     rows = read_catalog(input_csv)
     if limit:
         rows = rows[:limit]
 
-    log(f"ENGINE v0.9.0 | START products={len(rows)} marketplaces={[m['name'] for m in market_cfg]}")
+    log(f"ENGINE v1.0 | START products={len(rows)} marketplaces={[m['name'] for m in market_cfg]}")
 
     # Global cache reused by all jobs on the same Render instance.
     cache = Cache(str(DATA_DIR / "priceintel_global_cache.sqlite"))
@@ -305,9 +328,11 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
         results = list(checkpoint.get("results") or [])
         offer_rows = list(checkpoint.get("offer_rows") or [])
         start_index = max(0, min(int(checkpoint.get("next_index") or 0), len(rows)))
+        prior_elapsed_seconds = float(checkpoint.get("elapsed_seconds") or 0.0)
     else:
         results, offer_rows = [], []
         start_index = 0
+        prior_elapsed_seconds = 0.0
     canceled = False
 
     if start_index:
@@ -350,9 +375,19 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                 break
 
             current_hits = sum(len(grouped_hits.get(d, [])) for d in domains)
-            if stage > 1 and current_hits >= min_hits:
-                log(f"CASCADE STOP: already have {current_hits} unique marketplace hit(s)")
-                break
+            candidate_sources = _candidate_source_count(grouped_hits, domains)
+            adaptive_enabled = bool(cfg.get("adaptive_search_enabled", True))
+            adaptive_min_sources = int(cfg.get("adaptive_min_candidate_sources", 4))
+            if stage > 1:
+                if adaptive_enabled and candidate_sources >= adaptive_min_sources:
+                    log(
+                        f"ADAPTIVE SEARCH STOP: candidate_sources={candidate_sources} "
+                        f">={adaptive_min_sources} target_hits={current_hits}"
+                    )
+                    break
+                if not adaptive_enabled and current_hits >= min_hits:
+                    log(f"CASCADE STOP: already have {current_hits} unique marketplace hit(s)")
+                    break
 
             log(f"SEARCH STAGE {stage}/{len(cascade_queries)}: {search_query}")
             try:
@@ -371,7 +406,11 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                 )
                 total_unique = sum(len(grouped_hits.get(d, [])) for d in domains)
                 other_unique = len(grouped_hits.get("__other__", []))
-                log(f"SEARCH STAGE {stage} RESULT: target_hits={total_unique} other_ua_hits={other_unique}")
+                candidate_sources = _candidate_source_count(grouped_hits, domains)
+                log(
+                    f"SEARCH STAGE {stage} RESULT: target_hits={total_unique} "
+                    f"other_ua_hits={other_unique} candidate_sources={candidate_sources}"
+                )
             except Exception as e:
                 log(f"SERPER STAGE {stage} ERROR {type(e).__name__}: {e}")
 
@@ -513,6 +552,8 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                     "Причина проверки": price_reason,
                     "Match %": round(match, 1),
                     "URL": final_prod["url"],
+                    "PriceIntel": app_version,
+                    "Автор": brand_author,
                 })
 
                 if suspicious:
@@ -629,6 +670,8 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                 "Причина проверки": price_reason,
                 "Match %": round(match, 1),
                 "URL": url,
+                "PriceIntel": app_version,
+                "Автор": brand_author,
             })
 
             if suspicious:
@@ -760,12 +803,18 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
             "Запас, грн": market_reserve_uah,
             "Запас, %": market_reserve_pct,
             "Score": st["price_score"],
+            "PriceIntel": app_version,
+            "Автор": brand_author,
         })
         results.append(report_row)
 
         # Persist only completed products. If the worker/browser dies, resume starts here.
         if not canceled:
-            _save_checkpoint(checkpoint_path, i, results, offer_rows, log)
+            current_elapsed = prior_elapsed_seconds + (time.perf_counter() - run_started)
+            _save_checkpoint(
+                checkpoint_path, i, results, offer_rows, log,
+                elapsed_seconds=current_elapsed,
+            )
 
         if progress_cb:
             progress_cb(i, len(rows), product_name, f"Оброблено {i} з {len(rows)}")
@@ -805,7 +854,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
         "Код товара", "Категория", "Постачальник", "Артикул",
         "Маркетплейс", "Магазин", "Название конкурента",
         "Цена конкурента", "Источник цены", "Статус цены",
-        "Причина проверки", "Match %", "URL",
+        "Причина проверки", "Match %", "URL", "PriceIntel", "Автор",
     ]
     if offer_rows:
         write_csv(offers_csv, offer_rows, offer_fields)
@@ -819,19 +868,57 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
     serper_usd_per_1000 = float(cfg.get("serper_usd_per_1000", 1.0))
     serper_cost_usd = round(searcher.api_requests * serper_usd_per_1000 / 1000.0, 4)
     api_per_product = round(searcher.api_requests / len(results), 3) if results else 0
+
+    elapsed_seconds = round(
+        prior_elapsed_seconds + (time.perf_counter() - run_started), 2
+    )
+    products_per_minute = round(
+        len(results) / (elapsed_seconds / 60.0), 2
+    ) if elapsed_seconds > 0 and results else 0.0
+    found_products = sum(
+        1 for r in results if int(float(r.get("Джерел ринку") or 0)) > 0
+    )
+    found_pct = round(found_products / len(results) * 100.0, 1) if results else 0.0
+    source_values = [
+        float(r.get("Джерел ринку") or 0) for r in results
+    ]
+    avg_market_sources = round(
+        sum(source_values) / len(source_values), 2
+    ) if source_values else 0.0
+    serper_total_lookups = searcher.api_requests + searcher.cache_hits
+    serper_cache_hit_pct = round(
+        searcher.cache_hits / serper_total_lookups * 100.0, 1
+    ) if serper_total_lookups else 0.0
+
+    log(
+        f"RELEASE METRICS: elapsed={elapsed_seconds:.2f}s "
+        f"products_per_min={products_per_minute:.2f} "
+        f"found={found_products}/{len(results)} ({found_pct:.1f}%) "
+        f"avg_sources={avg_market_sources:.2f} "
+        f"serper_cache_hit={serper_cache_hit_pct:.1f}%"
+    )
     log(
         f"DONE products={len(results)} offers={len(offer_rows)} verdicts={counts} "
         f"serper_api_requests={searcher.api_requests} serper_cache_hits={searcher.cache_hits} "
-        f"serper_cost_usd={serper_cost_usd:.4f} api_per_product={api_per_product} canceled={canceled}"
+        f"serper_cost_usd={serper_cost_usd:.4f} api_per_product={api_per_product} "
+        f"elapsed_seconds={elapsed_seconds:.2f} canceled={canceled}"
     )
     return {
+        "version": app_version,
+        "author": brand_author,
         "products": len(results),
         "offers": len(offer_rows),
         "verdicts": counts,
         "serper_api_requests": searcher.api_requests,
         "serper_cache_hits": searcher.cache_hits,
+        "serper_cache_hit_pct": serper_cache_hit_pct,
         "serper_cost_usd": serper_cost_usd,
         "serper_usd_per_1000": serper_usd_per_1000,
         "api_per_product": api_per_product,
+        "elapsed_seconds": elapsed_seconds,
+        "products_per_minute": products_per_minute,
+        "found_products": found_products,
+        "found_pct": found_pct,
+        "avg_market_sources": avg_market_sources,
         "canceled": canceled,
     }

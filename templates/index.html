@@ -3,15 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>PriceIntel</title>
+  <title>{{app_name}} {{app_version}}</title>
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
 <main class="wrap">
   <section class="hero">
-    <div class="badge">PRICE INTELLIGENCE • MVP v0.8.0 • BALANCED UA MARKET</div>
+    <div class="badge">{{app_name|upper}} • {{app_version}} • PRODUCTION RELEASE</div>
     <h1>Знайди товари, на які варто лити рекламу.</h1>
-    <p>Завантаж CSV постачальника. PriceIntel порівняє твою ціну з ринком, відфільтрує схожі товари та поставить Price Score.</p>
+    <p>Завантаж CSV постачальника. PriceIntel порівняє твою ціну з ринком, відфільтрує чужі моделі, збалансує незалежні джерела та поставить Price Score.</p>
   </section>
 
   <section class="card">
@@ -28,7 +28,7 @@
           <input name="supplier" type="text" placeholder="Напр. ERC, Brain, Юг-Контракт" required>
         </label>
         <label>Скільки товарів аналізувати зараз?
-          <input name="limit" type="number" value="5" min="1" max="5000">
+          <input name="limit" type="number" value="30" min="1" max="5000">
         </label>
         <div>
           <div class="label">Маркетплейси</div>
@@ -42,18 +42,20 @@
 
       <div class="cost-box" id="cost-box">
         <b>💵 Прогноз Serper:</b> <span id="cost-forecast">—</span>
-        <div class="muted">Оцінка до запуску. Кеш може зменшити фактичну кількість платних запитів.</div>
+        <div class="muted">Оцінка до запуску. Кеш та адаптивний пошук можуть зменшити фактичну кількість платних запитів.</div>
       </div>
       <button class="primary" id="submit-btn" type="submit">🚀 Почати аналіз</button>
-      <p class="hint">v0.8 рахує ринок збалансовано: один незалежний майданчик/магазин = один голос у ринковій статистиці.</p>
+      <p class="hint">v1.0: balanced market + adaptive search + parallel prefetch + checkpoint/resume.</p>
     </form>
   </section>
 
   <section class="mini">
-    <div><b>MIN / MEDIAN / AVG / MAX</b><span>ринкова статистика</span></div>
-    <div><b>Match Score</b><span>відсіювання чужих моделей</span></div>
-    <div><b>Price Score 0–100</b><span>готовий пріоритет реклами</span></div>
+    <div><b>Adaptive Search</b><span>копає глибше лише коли незалежних джерел замало</span></div>
+    <div><b>Checkpoint / Resume</b><span>можна продовжити після зупинки або обриву</span></div>
+    <div><b>Release Metrics</b><span>час, товари/хв, покриття, джерела та API-витрати</span></div>
   </section>
+
+  <footer class="brand-footer">{{brand_line}} • {{app_name}} {{app_version}}</footer>
 </main>
 
 <script>
@@ -67,8 +69,8 @@
   const submit = document.getElementById('submit-btn');
   const limitInput = form.querySelector('input[name="limit"]');
   const forecastEl = document.getElementById('cost-forecast');
-  const requestsPerProduct = 1.7;
-  const usdPer1000 = 1.0;
+  const requestsPerProduct = Number({{forecast_requests_per_product|tojson}});
+  const usdPer1000 = Number({{serper_usd_per_1000|tojson}});
 
   function updateForecast() {
     const products = Math.max(1, parseInt(limitInput.value || '1', 10));
@@ -106,22 +108,17 @@
   }
 
   input.addEventListener('change', () => showFile(input.files[0]));
-
   ['dragenter','dragover'].forEach(evt => drop.addEventListener(evt, e => {
-    e.preventDefault();
-    drop.classList.add('dragging');
+    e.preventDefault(); drop.classList.add('dragging');
   }));
   ['dragleave','drop'].forEach(evt => drop.addEventListener(evt, e => {
-    e.preventDefault();
-    drop.classList.remove('dragging');
+    e.preventDefault(); drop.classList.remove('dragging');
   }));
   drop.addEventListener('drop', e => {
     const files = e.dataTransfer.files;
     if (!files || !files.length) return;
-    const dt = new DataTransfer();
-    dt.items.add(files[0]);
-    input.files = dt.files;
-    showFile(files[0]);
+    const dt = new DataTransfer(); dt.items.add(files[0]);
+    input.files = dt.files; showFile(files[0]);
   });
 
   form.addEventListener('submit', e => {

@@ -233,7 +233,15 @@ _load_previous_jobs()
 @app.get("/")
 def index():
     cfg = json.loads((BASE / "config.json").read_text(encoding="utf-8"))
-    return render_template("index.html", marketplaces=cfg["marketplaces"])
+    return render_template(
+        "index.html",
+        marketplaces=cfg["marketplaces"],
+        app_name=cfg.get("app_name", "PriceIntel"),
+        app_version=cfg.get("app_version", "v1.0"),
+        brand_line=cfg.get("brand_line", "Made by Пума (Чернявський А.)"),
+        forecast_requests_per_product=cfg.get("serper_forecast_requests_per_product", 1.7),
+        serper_usd_per_1000=cfg.get("serper_usd_per_1000", 1.0),
+    )
 
 
 @app.post("/analyze")
@@ -299,7 +307,12 @@ def analyze():
 def job_page(job_id):
     if not get_job(job_id):
         abort(404)
-    return render_template("job.html", job_id=job_id)
+    cfg = json.loads((BASE / "config.json").read_text(encoding="utf-8"))
+    return render_template(
+        "job.html", job_id=job_id,
+        app_version=cfg.get("app_version", "v1.0"),
+        brand_line=cfg.get("brand_line", "Made by Пума (Чернявський А.)"),
+    )
 
 
 @app.get("/api/jobs/<job_id>")
@@ -315,6 +328,7 @@ def job_status(job_id):
             safe["offers_url"] = url_for("download_offers", job_id=job_id)
             safe["xlsx_url"] = url_for("download_xlsx", job_id=job_id)
             safe["preview_url"] = url_for("preview", job_id=job_id)
+            safe["xlsx_url"] = url_for("download_xlsx", job_id=job_id)
     return jsonify(safe)
 
 
@@ -358,7 +372,12 @@ def preview(job_id):
             rows.append(row)
             if i >= 199:
                 break
-    return render_template("preview.html", job=job, rows=rows)
+    cfg = json.loads((BASE / "config.json").read_text(encoding="utf-8"))
+    return render_template(
+        "preview.html", job=job, rows=rows,
+        app_version=cfg.get("app_version", "v1.0"),
+        brand_line=cfg.get("brand_line", "Made by Пума (Чернявський А.)"),
+    )
 
 
 @app.get("/jobs/<job_id>/xlsx")
