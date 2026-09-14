@@ -128,13 +128,18 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
         min_hits = int(cfg.get("cascade_min_hits", 3))
         cascade_enabled = bool(cfg.get("cascade_search_enabled", True))
 
+        log(f"CASCADE PLAN: {cascade_queries} min_hits={min_hits} enabled={cascade_enabled}")
+
         for stage, search_query in enumerate(cascade_queries, 1):
             if stage > 1 and not cascade_enabled:
+                log("CASCADE STOP: disabled in config")
                 break
+
             current_hits = sum(len(v) for v in grouped_hits.values())
             if stage > 1 and current_hits >= min_hits:
-                log(f"CASCADE STOP: already have {current_hits} marketplace hit(s)")
+                log(f"CASCADE STOP: already have {current_hits} unique marketplace hit(s)")
                 break
+
             log(f"SEARCH STAGE {stage}/{len(cascade_queries)}: {search_query}")
             try:
                 stage_hits = searcher.search_all(
@@ -144,15 +149,16 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                     exact_query=True,
                 )
                 _merge_grouped_hits(
-                    grouped_hits, stage_hits, domains,
-                    cfg["max_results_per_marketplace"]
+                    grouped_hits,
+                    stage_hits,
+                    domains,
+                    cfg["max_results_per_marketplace"],
                 )
-                log(
-                    f"SEARCH STAGE {stage} RESULT: "
-                    f"{sum(len(v) for v in grouped_hits.values())} unique marketplace hit(s)"
-                )
+                total_unique = sum(len(v) for v in grouped_hits.values())
+                log(f"SEARCH STAGE {stage} RESULT: total_unique_hits={total_unique}")
             except Exception as e:
                 log(f"SERPER STAGE {stage} ERROR {type(e).__name__}: {e}")
+
 
         for mp in market_cfg:
             if cancel_cb and cancel_cb():

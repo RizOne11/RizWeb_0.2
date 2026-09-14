@@ -71,7 +71,7 @@ class SerperSearch:
         return identifier.strip('\'"“”`') or q
 
     def _cache_key(self, simple_query, domains):
-        return "serper:v06:" + simple_query.lower() + ":" + ",".join(sorted(d.lower() for d in domains))
+        return "serper:v061:" + simple_query.lower() + ":" + ",".join(sorted(d.lower() for d in domains))
 
     def _request(self, simple_query, domains):
         cache_key = self._cache_key(simple_query, domains)

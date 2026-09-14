@@ -62,3 +62,6 @@ Unified report schema across runner, browser preview, CSV and XLSX.
 - Added seller count and market confidence.
 - One valid offer cannot produce the strongest `🔥 РЕКЛАМУВАТИ` verdict; it is downgraded to `🟡 ТЕСТУВАТИ`.
 - Same-price tolerance is ±1 UAH.
+
+## v0.6.1
+Hotfix: explicit cascade logging, full-query Serper stages, Kasta/Hotline UI and XLSX columns.
