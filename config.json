@@ -1,0 +1,15 @@
+{
+  "marketplaces": [
+    {"name": "Rozetka", "domain": "rozetka.com.ua"},
+    {"name": "Prom", "domain": "prom.ua"},
+    {"name": "Epicentr", "domain": "epicentrk.ua"},
+    {"name": "Allo", "domain": "allo.ua"},
+    {"name": "Foxtrot", "domain": "foxtrot.com.ua"},
+    {"name": "Comfy", "domain": "comfy.ua"}
+  ],
+  "max_results_per_marketplace": 5,
+  "request_delay_seconds": 1.5,
+  "match_threshold": 72,
+  "currency": "UAH",
+  "user_agent": "Mozilla/5.0 (compatible; PriceIntelMVP/0.1; +local-research-tool)"
+}

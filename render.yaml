@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: priceintel
+    runtime: docker
+    plan: starter
+    healthCheckPath: /
+    envVars:
+      - key: MAX_PRODUCTS_PER_JOB
+        value: "5000"
+      - key: MAX_UPLOAD_MB
+        value: "120"
