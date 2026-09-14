@@ -8,7 +8,7 @@ from pathlib import Path
 import requests
 
 from .io import read_catalog, write_csv, discount_pct
-from .matcher import build_query, score_match
+from .matcher import build_query, score_match, classify_match, build_fingerprint
 from .search import SerperSearch
 from .extract import extract_product
 from .cache import Cache
@@ -299,7 +299,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
     brand_author = str(cfg.get("brand_author", "Пума (Чернявський А.)"))
     selected = set(marketplaces or [m["name"] for m in cfg["marketplaces"]])
     market_cfg = [m for m in cfg["marketplaces"] if m["name"] in selected]
-    rows = read_catalog(input_csv, limit=limit)
+    rows = read_catalog(input_csv, include_content=True, limit=limit)
 
     log(f"ENGINE {app_version} | START products={len(rows)} marketplaces={[m['name'] for m in market_cfg]}")
 
@@ -526,7 +526,8 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                         log(f"  EXTRACT ERROR {type(e).__name__}: {e}")
 
                 candidate_title = (prod or {}).get("title") or hit_title
-                match = score_match(row, candidate_title, url)
+                match_info = classify_match(row, candidate_title, url, (prod or {}).get("description", ""))
+                match = float(match_info["score"])
                 extracted_price = (prod or {}).get("price")
 
                 if prod:
@@ -541,8 +542,8 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                     price_source = "serper"
                     log(f"  FALLBACK PRICE: {chosen_price} from Serper (blocked={blocked})")
 
-                if match < cfg["match_threshold"]:
-                    log(f"  REJECT: match<{cfg['match_threshold']}")
+                if match_info["status"] not in set(cfg.get("accepted_match_statuses", ["EXACT"])):
+                    log(f"  REJECT: product_match={match_info['status']} reason={match_info['reason']}")
                     continue
                 if not chosen_price:
                     log("  REJECT: no price extracted or safe search-price hint")
@@ -599,6 +600,8 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                     "Статус цены": price_status,
                     "Причина проверки": price_reason,
                     "Match %": round(match, 1),
+                    "Match статус": match_info["status"],
+                    "Match причина": match_info["reason"],
                     "URL": final_prod["url"],
                     "PriceIntel": app_version,
                     "Автор": brand_author,
@@ -662,7 +665,8 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                     log(f"  OTHER EXTRACT ERROR {type(e).__name__}: {e}")
 
             candidate_title = (prod or {}).get("title") or hit_title
-            match = score_match(row, candidate_title, url)
+            match_info = classify_match(row, candidate_title, url, (prod or {}).get("description", ""))
+            match = float(match_info["score"])
             extracted_price = (prod or {}).get("price")
             chosen_price = extracted_price
             price_source = "page"
@@ -672,8 +676,8 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                 price_source = "serper"
                 log(f"  OTHER FALLBACK PRICE: {chosen_price} from Serper (blocked={blocked})")
 
-            if match < cfg["match_threshold"]:
-                log(f"  OTHER REJECT: match<{cfg['match_threshold']}")
+            if match_info["status"] not in set(cfg.get("accepted_match_statuses", ["EXACT"])):
+                log(f"  OTHER REJECT: product_match={match_info['status']} reason={match_info['reason']}")
                 continue
             if not chosen_price:
                 log("  OTHER REJECT: no price")
@@ -717,6 +721,8 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                 "Статус цены": price_status,
                 "Причина проверки": price_reason,
                 "Match %": round(match, 1),
+                "Match статус": match_info["status"],
+                "Match причина": match_info["reason"],
                 "URL": url,
                 "PriceIntel": app_version,
                 "Автор": brand_author,

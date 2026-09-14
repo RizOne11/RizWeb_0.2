@@ -33,14 +33,14 @@
       "domain": "hotline.ua"
     }
   ],
-  "max_results_per_marketplace": 5,
+  "max_results_per_marketplace": 20,
   "request_delay_seconds": 0.25,
   "match_threshold": 72,
   "currency": "UAH",
   "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
   "search_gl": "ua",
   "search_hl": "uk",
-  "serper_num_results": 50,
+  "serper_num_results": 100,
   "serper_cache_seconds": 259200,
   "page_cache_seconds": 86400,
   "search_price_match_threshold": 90,
@@ -51,7 +51,7 @@
   "same_price_tolerance_uah": 1.0,
   "other_ua_shops_enabled": true,
   "other_ua_shops_affect_score": true,
-  "other_ua_shops_max_hits": 30,
+  "other_ua_shops_max_hits": 80,
   "serper_usd_per_1000": 1.0,
   "serper_forecast_requests_per_product": 8.0,
   "market_overprice_red_pct": 10.0,
@@ -59,7 +59,7 @@
   "request_timeout_seconds": 12,
   "app_name": "PUMA Platform",
   "app_version": "v1.2",
-  "release_name": "Deep Scan Release",
+  "release_name": "Deep Scan Exact Product Release",
   "brand_author": "Пума (Чернявський А.)",
   "brand_line": "Made by Пума (Чернявський А.)",
   "adaptive_search_enabled": false,
@@ -80,5 +80,11 @@
   ],
   "tier1_recovery_enabled": true,
   "tier1_recovery_max_queries": 3,
-  "tier1_require_complete_for_hot_verdict": true
+  "tier1_require_complete_for_hot_verdict": true,
+  "accepted_match_statuses": [
+    "EXACT"
+  ],
+  "exact_product_match_enabled": true,
+  "marketplace_competitor_collection": true,
+  "quality_first_mode": true
 }
