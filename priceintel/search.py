@@ -27,6 +27,25 @@ def _price_from_text(text):
     return _price_num(m.group(1)) if m else None
 
 
+def _canonical_url(url):
+    """Normalize tracking noise without collapsing real product selector params."""
+    try:
+        parsed = urllib.parse.urlsplit(url or "")
+        if not parsed.scheme or not parsed.netloc:
+            return url or ""
+        drop = {"rsltid", "srsltid", "gclid", "fbclid", "ved", "sa", "source"}
+        q = []
+        for k, v in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True):
+            lk = k.lower()
+            if lk.startswith("utm_") or lk in drop:
+                continue
+            q.append((k, v))
+        query = urllib.parse.urlencode(q, doseq=True)
+        return urllib.parse.urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path, query, ""))
+    except Exception:
+        return url or ""
+
+
 class SerperSearch:
     ENDPOINT = "https://google.serper.dev/search"
 
@@ -158,16 +177,19 @@ class SerperSearch:
                 hit = {
                     "title": title,
                     "url": url,
+                    "canonical_url": _canonical_url(url),
                     "snippet": snippet,
                     "position": item.get("position"),
                     "source": source,
                     "price_hint": price_hint,
+                    "search_query": simple_query,
                 }
 
                 if domain:
-                    if url in seen or len(grouped[domain]) >= limit_per_domain:
+                    key = hit["canonical_url"] or url
+                    if key in seen or len(grouped[domain]) >= limit_per_domain:
                         continue
-                    seen.add(url)
+                    seen.add(key)
                     grouped[domain].append(hit)
                     continue
 
@@ -180,8 +202,9 @@ class SerperSearch:
                     host = host[4:]
                 is_ua = host.endswith(".ua")
                 blocked_host = any(host == x or host.endswith("." + x) for x in excluded_other_hosts)
-                if is_ua and not blocked_host and url not in other_seen:
-                    other_seen.add(url)
+                key = hit["canonical_url"] or url
+                if is_ua and not blocked_host and key not in other_seen:
+                    other_seen.add(key)
                     hit["host"] = host
                     grouped["__other__"].append(hit)
 

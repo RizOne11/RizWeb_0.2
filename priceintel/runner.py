@@ -61,6 +61,89 @@ def _balanced_market_offers(accepted_market, accepted_other):
     return reps
 
 
+def _post_verify_price_outliers(accepted_market, accepted_other, own_price, offer_rows, cfg, log):
+    """Second verification gate for obviously bad extracted prices.
+
+    Product identity is checked first. This gate then looks for extraction/snippet
+    anomalies (installment payment, accessory price, typo, etc.) using peer
+    consensus. It never upgrades a weak product match and it does not spend any
+    extra API credits. Outliers are moved to the suspicious pool and excluded
+    from market statistics/verdicts, but remain visible in the offers audit.
+    """
+    enabled = bool(cfg.get("price_consensus_verification_enabled", True))
+    if not enabled:
+        return accepted_market, accepted_other, [], []
+
+    ratio_limit = float(cfg.get("price_consensus_ratio_limit", 3.0))
+    min_peer_refs = int(cfg.get("price_consensus_min_peer_refs", 2))
+    all_items = [("market", x) for x in accepted_market] + [("other", x) for x in accepted_other]
+    if len(all_items) < 2:
+        return accepted_market, accepted_other, [], []
+
+    own_num = None
+    try:
+        own_num = float(own_price) if own_price not in (None, "", 0) else None
+    except (TypeError, ValueError):
+        own_num = None
+
+    suspicious_market, suspicious_other = [], []
+    keep_market, keep_other = [], []
+
+    for kind, item in all_items:
+        try:
+            price = float(item.get("price"))
+        except (TypeError, ValueError):
+            (keep_market if kind == "market" else keep_other).append(item)
+            continue
+        refs = []
+        for _, peer in all_items:
+            if peer is item:
+                continue
+            try:
+                pv = float(peer.get("price"))
+                if pv > 0:
+                    refs.append(pv)
+            except (TypeError, ValueError):
+                pass
+        if own_num and own_num > 0:
+            refs.append(own_num)
+
+        # Need at least two independent reference values before calling a price
+        # anomalous. This keeps genuine extreme bargains from being rejected on
+        # the basis of our own price alone.
+        if len(refs) < min_peer_refs:
+            (keep_market if kind == "market" else keep_other).append(item)
+            continue
+
+        ref = statistics.median(refs)
+        if ref <= 0 or price <= 0:
+            (keep_market if kind == "market" else keep_other).append(item)
+            continue
+        ratio = max(price / ref, ref / price)
+        if ratio <= ratio_limit:
+            (keep_market if kind == "market" else keep_other).append(item)
+            continue
+
+        reason = f"price consensus outlier {ratio:.2f}x vs peer median {ref:.2f} (> {ratio_limit:.2f}x)"
+        item["price_verification_reason"] = reason
+        if kind == "market":
+            suspicious_market.append(item)
+        else:
+            suspicious_other.append(item)
+        log(f"  PRICE VERIFY SUSPICIOUS: {item.get('marketplace') or item.get('host')} price={price} | {reason}")
+
+        # Preserve the offer in the audit report, but explicitly show that it did
+        # not affect market statistics. URL is our stable join key inside a run.
+        url = item.get("url") or ""
+        for audit in reversed(offer_rows):
+            if url and audit.get("URL") == url:
+                audit["Статус цены"] = "⚠️ АНОМАЛЬНА ЦІНА"
+                audit["Причина проверки"] = reason
+                break
+
+    return keep_market, keep_other, suspicious_market, suspicious_other
+
+
 def _resolve_verdict(st, own_price, market_sources, suspicious_count, cfg, log):
     """Return final verdict using an explicit market price-position guard."""
     base_verdict = st.get("verdict") or "⚪ НЕ ЗНАЙДЕНО"
@@ -98,69 +181,207 @@ def _resolve_verdict(st, own_price, market_sources, suspicious_count, cfg, log):
 
     return base_verdict, f"BASE_SCORE_{int(st.get('price_score') or 0)}"
 
-def _clean_title_for_search(title, brand="", max_words=8):
+def _clean_title_for_search(title, brand="", max_words=14):
     text = str(title or "")
-    # Remove bracketed supplier/model duplicates and noisy punctuation.
+    # Keep model punctuation (P27QCB-RA), remove only noisy brackets/punctuation.
     text = re.sub(r"\([^)]{0,80}\)", " ", text)
     text = re.sub(r"\[[^]]{0,80}\]", " ", text)
-    text = re.sub(r"[^0-9A-Za-zА-Яа-яІіЇїЄєҐґ+._-]+", " ", text)
+    text = re.sub(r"[^0-9A-Za-zА-Яа-яІіЇїЄєҐґ+._/\-\"×]+", " ", text)
     words = [w for w in text.split() if len(w) > 1]
-    # Avoid duplicating brand if it is already in the title.
-    result = " ".join(words[:max_words]).strip()
-    return result
+    return " ".join(words[:max_words]).strip()
 
 
-def _cascade_queries(row, primary_query, max_queries=3):
-    sku = str(row.get("Артикул") or "").strip()
+def _public_model_tokens(row):
+    """Return model-like public identifiers, strongest first.
+
+    Supplier article is intentionally separate: many supplier SKUs are internal and
+    must not be treated as manufacturer MPNs. We prefer mixed alpha-numeric tokens
+    from the title/parameters such as P27QCB-RA, A27Q, JBLC50HIRED.
+    """
+    fp = build_fingerprint(row)
+    out = []
+    seen = set()
+    for token in fp.get("models") or []:
+        t = str(token or "").strip('()[]{} ,;:\"\'')
+        c = re.sub(r"[^0-9A-Za-zА-Яа-яІіЇїЄєҐґ]+", "", t).lower()
+        if len(c) < 4:
+            continue
+        if not re.search(r"[A-Za-zА-Яа-яІіЇїЄєҐґ]", t) or not re.search(r"\d", t):
+            continue
+        # Exclude obvious dimensions/resolutions masquerading as model tokens.
+        if re.fullmatch(r"\d{3,4}[xх×]\d{3,4}", t, re.I):
+            continue
+        if c in seen:
+            continue
+        seen.add(c)
+        out.append(t)
+    # Hyphenated/long identifiers are usually stronger MPNs than short family names.
+    out.sort(key=lambda x: (0 if '-' in x else 1, -len(x)))
+    return out
+
+
+def _sku_query_variants(sku):
+    sku = str(sku or "").strip()
+    if not sku:
+        return []
+    vals = [sku]
+    if sku.isdigit():
+        stripped = sku.lstrip('0') or '0'
+        if stripped != sku and len(stripped) >= 3:
+            vals.append(stripped)
+    return vals
+
+
+def _search_matrix_queries(row, max_queries=8):
+    """Quality-first query matrix shared by EVERY marketplace and broad UA search.
+
+    Order matters: strong public model/MPN first, then supplier article variants,
+    then model family/full title. We deliberately avoid spending all query slots on
+    near-duplicate identifier queries.
+    """
     brand = str(row.get("Производитель") or "").strip()
-    title = _clean_title_for_search(row.get("Название") or "")
+    title_raw = str(row.get("Название") or "").strip()
+    title = _clean_title_for_search(title_raw, brand=brand)
+    sku = str(row.get("Артикул") or "").strip()
+    models = _public_model_tokens(row)
     queries = []
 
     def add(q):
         q = " ".join(str(q or "").split()).strip()
-        if q and q.lower() not in {x.lower() for x in queries}:
+        if not q:
+            return
+        key = q.casefold()
+        if key not in {x.casefold() for x in queries}:
             queries.append(q)
 
-    # Stage 1: identifier only — cheapest and most precise.
-    add(sku or primary_query)
-    # Stage 2: brand + SKU/model.
-    if brand and sku:
-        add(f"{brand} {sku}")
-    # Stage 3: brand/title or clean title.
-    if title:
-        if brand and brand.lower() not in title.lower():
-            add(f"{brand} {title}")
-        else:
-            add(title)
+    # 1) Strongest public MPN/model. Example: P27QCB-RA.
+    if models:
+        add(f'"{models[0]}"')
+        if brand:
+            add(f'{brand} "{models[0]}"')
 
-    return queries[:max(1, int(max_queries))]
+    # 2) Supplier article variants. Useful for copied supplier feeds, but matcher
+    # still requires independent product identity evidence.
+    for value in _sku_query_variants(sku):
+        add(f'"{value}"')
+
+    # 3) Human model family query catches marketplaces that hide MPN/SKU.
+    clean_words = title.split()
+    family_parts = clean_words[:6]
+    if brand and not any(w.casefold() == brand.casefold() for w in family_parts):
+        family_parts.insert(0, brand)
+    add(" ".join(family_parts))
+
+    # 4) Full clean/raw title for exact-name listings.
+    add(title)
+    add(title_raw)
+
+    # 5) Secondary public model tokens (e.g. A27Q) as fallback.
+    for model in models[1:3]:
+        add(f'"{model}"')
+        if brand:
+            add(f'{brand} "{model}"')
+
+    limit = max(1, int(max_queries))
+    return queries[:limit]
+
+
+def _canonical_hit_key(hit):
+    return (hit.get("canonical_url") or hit.get("url") or "").strip()
 
 
 def _merge_grouped_hits(target, incoming, domains, limit_per_domain, other_limit=12):
     for domain in domains:
         current = target.setdefault(domain, [])
-        seen = {x.get("url") for x in current}
+        seen = {_canonical_hit_key(x) for x in current if _canonical_hit_key(x)}
         for hit in incoming.get(domain, []):
-            url = hit.get("url")
-            if not url or url in seen:
+            key = _canonical_hit_key(hit)
+            if not key or key in seen:
                 continue
             current.append(hit)
-            seen.add(url)
+            seen.add(key)
             if len(current) >= limit_per_domain:
                 break
 
     other_current = target.setdefault("__other__", [])
-    other_seen = {x.get("url") for x in other_current if x.get("url")}
+    other_seen = {_canonical_hit_key(x) for x in other_current if _canonical_hit_key(x)}
     for hit in incoming.get("__other__", []):
-        url = hit.get("url")
-        if not url or url in other_seen:
+        key = _canonical_hit_key(hit)
+        if not key or key in other_seen:
             continue
         other_current.append(hit)
-        other_seen.add(url)
+        other_seen.add(key)
         if len(other_current) >= other_limit:
             break
     return target
 
+
+def _run_search_matrix(row, market_cfg, searcher, cfg, log):
+    """Discover candidates for all configured marketplaces + Ukrainian shops.
+
+    Phase A runs broad queries to discover both Tier-1 and Other-UA shops.
+    Phase B runs the SAME identity query matrix against EVERY marketplace using
+    site:domain, even if Phase A already found a hit. This is deliberate: one hit
+    is not enough when a marketplace can have multiple sellers/prices.
+    """
+    domains = [m["domain"] for m in market_cfg]
+    grouped = {d: [] for d in domains}
+    grouped["__other__"] = []
+    matrix = _search_matrix_queries(row, cfg.get("search_matrix_max_queries", 6))
+    broad_limit = int(cfg.get("broad_search_matrix_max_queries", len(matrix)))
+    target_limit = int(cfg.get("marketplace_search_matrix_max_queries", len(matrix)))
+    max_per_domain = int(cfg.get("max_results_per_marketplace", 20))
+    other_limit = int(cfg.get("other_ua_shops_max_hits", 80))
+
+    log(f"SEARCH MATRIX: {matrix}")
+    # A. Broad market discovery; every query can contribute Other-UA stores.
+    for idx, query in enumerate(matrix[:max(1, broad_limit)], 1):
+        try:
+            hits = searcher.search_all(query, domains, limit_per_domain=max_per_domain, exact_query=True)
+            _merge_grouped_hits(grouped, hits, domains, max_per_domain, other_limit)
+            log(
+                f"BROAD MATRIX {idx}: q={query!r} target_hits="
+                f"{sum(len(grouped.get(d, [])) for d in domains)} other_ua={len(grouped['__other__'])}"
+            )
+        except Exception as e:
+            log(f"BROAD MATRIX ERROR {idx}: {type(e).__name__}: {e}")
+
+    # B. Deterministic marketplace recovery/expansion for EVERY source.
+    marketplace_errors = set()
+    run_all = bool(cfg.get("marketplace_search_matrix_run_all", True))
+    min_pool = int(cfg.get("marketplace_candidate_pool_target", 5))
+    min_queries_before_stop = int(cfg.get("marketplace_min_queries_before_stop", 2))
+    for mp in market_cfg:
+        name, domain = mp["name"], mp["domain"]
+        log(f"MARKETPLACE MATRIX START: {name} ({domain}) existing={len(grouped.get(domain, []))}")
+        executed = 0
+        for idx, query in enumerate(matrix[:max(1, target_limit)], 1):
+            if (not run_all and executed >= min_queries_before_stop and len(grouped.get(domain, [])) >= min_pool):
+                log(f"MARKETPLACE MATRIX STOP: {name} candidate_pool={len(grouped.get(domain, []))}")
+                break
+            targeted_query = f"{query} site:{domain}"
+            try:
+                hits = searcher.search_all(targeted_query, [domain], limit_per_domain=max_per_domain, exact_query=True)
+                # Targeted queries contribute ONLY their marketplace; Other-UA is
+                # discovered by the broad phase to avoid cross-contamination.
+                _merge_grouped_hits(
+                    grouped,
+                    {domain: hits.get(domain, []), "__other__": []},
+                    domains,
+                    max_per_domain,
+                    other_limit,
+                )
+                executed += 1
+                log(
+                    f"MARKETPLACE MATRIX {name} {idx}: q={targeted_query!r} "
+                    f"new_total={len(grouped.get(domain, []))}"
+                )
+            except Exception as e:
+                marketplace_errors.add(name)
+                log(f"MARKETPLACE MATRIX ERROR {name} {idx}: {type(e).__name__}: {e}")
+        log(f"MARKETPLACE MATRIX DONE: {name} candidates={len(grouped.get(domain, []))}")
+
+    return grouped, matrix, marketplace_errors
 
 
 def _load_checkpoint(path, log):
@@ -357,111 +578,33 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
         suspicious_other = []
         domains = [m["domain"] for m in market_cfg]
 
-        grouped_hits = {d: [] for d in domains}
-        grouped_hits["__other__"] = []
-        cascade_queries = _cascade_queries(
-            row, q, max_queries=cfg.get("cascade_max_queries", 3)
+        grouped_hits, search_matrix, marketplace_search_errors = _run_search_matrix(
+            row, market_cfg, searcher, cfg, log
         )
-        min_hits = int(cfg.get("cascade_min_hits", 3))
-        cascade_enabled = bool(cfg.get("cascade_search_enabled", True))
 
         deep_scan_enabled = bool(cfg.get("deep_scan_enabled", False))
-        tier1_required = [x for x in cfg.get("tier1_required_marketplaces", []) if x in {m["name"] for m in market_cfg}]
-        tier1_status = {m["name"]: "PENDING" for m in market_cfg if m["name"] in tier1_required}
-        tier1_errors = set()
-        log(f"CASCADE PLAN: {cascade_queries} min_hits={min_hits} enabled={cascade_enabled} deep_scan={deep_scan_enabled}")
-
-        for stage, search_query in enumerate(cascade_queries, 1):
-            if stage > 1 and not cascade_enabled:
-                log("CASCADE STOP: disabled in config")
-                break
-
-            current_hits = sum(len(grouped_hits.get(d, [])) for d in domains)
-            candidate_sources = _candidate_source_count(grouped_hits, domains)
-            adaptive_enabled = bool(cfg.get("adaptive_search_enabled", True))
-            adaptive_min_sources = int(cfg.get("adaptive_min_candidate_sources", 4))
-            if stage > 1 and not deep_scan_enabled:
-                if adaptive_enabled and candidate_sources >= adaptive_min_sources:
-                    log(
-                        f"ADAPTIVE SEARCH STOP: candidate_sources={candidate_sources} "
-                        f">={adaptive_min_sources} target_hits={current_hits}"
-                    )
-                    break
-                if not adaptive_enabled and current_hits >= min_hits:
-                    log(f"CASCADE STOP: already have {current_hits} unique marketplace hit(s)")
-                    break
-
-            log(f"SEARCH STAGE {stage}/{len(cascade_queries)}: {search_query}")
-            try:
-                stage_hits = searcher.search_all(
-                    search_query,
-                    domains,
-                    limit_per_domain=cfg["max_results_per_marketplace"],
-                    exact_query=True,
-                )
-                _merge_grouped_hits(
-                    grouped_hits,
-                    stage_hits,
-                    domains,
-                    cfg["max_results_per_marketplace"],
-                    cfg.get("other_ua_shops_max_hits", 12),
-                )
-                total_unique = sum(len(grouped_hits.get(d, [])) for d in domains)
-                other_unique = len(grouped_hits.get("__other__", []))
-                candidate_sources = _candidate_source_count(grouped_hits, domains)
-                log(
-                    f"SEARCH STAGE {stage} RESULT: target_hits={total_unique} "
-                    f"other_ua_hits={other_unique} candidate_sources={candidate_sources}"
-                )
-            except Exception as e:
-                log(f"SERPER STAGE {stage} ERROR {type(e).__name__}: {e}")
-                if deep_scan_enabled:
-                    tier1_errors.update(tier1_status.keys())
-
-        # v1.2 DEEP SCAN: every Tier-1 marketplace must receive a targeted
-        # recovery search when the broad cascade did not return a hit.
-        # Finding many Tier-2 shops can NEVER stop this pass.
-        if deep_scan_enabled and cfg.get("tier1_recovery_enabled", True):
-            recovery_queries = _cascade_queries(row, q, max_queries=cfg.get("tier1_recovery_max_queries", 3))
-            by_name = {m["name"]: m for m in market_cfg}
-            for mp_name in tier1_required:
-                mp = by_name[mp_name]
-                domain = mp["domain"]
-                if grouped_hits.get(domain):
-                    tier1_status[mp_name] = "FOUND_CANDIDATE"
-                    log(f"TIER1 CHECK {mp_name}: candidate already found in broad search")
-                    continue
-                log(f"TIER1 RECOVERY START: {mp_name} ({domain})")
-                had_error = False
-                for rq in recovery_queries:
-                    targeted_query = f"{rq} {domain}"
-                    try:
-                        targeted = searcher.search_all(
-                            targeted_query, [domain],
-                            limit_per_domain=cfg["max_results_per_marketplace"],
-                            exact_query=True,
-                        )
-                        # Merge only the requested Tier-1 domain. Other-UA results
-                        # from a targeted query must not masquerade as broad market discovery.
-                        _merge_grouped_hits(
-                            grouped_hits, {domain: targeted.get(domain, []), "__other__": []},
-                            domains, cfg["max_results_per_marketplace"],
-                            cfg.get("other_ua_shops_max_hits", 30),
-                        )
-                        log(f"TIER1 RECOVERY {mp_name}: query={targeted_query!r} hits={len(targeted.get(domain, []))}")
-                        if grouped_hits.get(domain):
-                            break
-                    except Exception as e:
-                        had_error = True
-                        log(f"TIER1 RECOVERY ERROR {mp_name}: {type(e).__name__}: {e}")
-                if grouped_hits.get(domain):
-                    tier1_status[mp_name] = "FOUND_CANDIDATE"
-                elif had_error:
-                    tier1_status[mp_name] = "ERROR"
-                    tier1_errors.add(mp_name)
-                else:
-                    tier1_status[mp_name] = "CHECKED_NOT_FOUND"
-                log(f"TIER1 CHECK {mp_name}: {tier1_status[mp_name]}")
+        tier1_required = [
+            x for x in cfg.get("tier1_required_marketplaces", [])
+            if x in {m["name"] for m in market_cfg}
+        ]
+        tier1_status = {}
+        by_name = {m["name"]: m for m in market_cfg}
+        for mp_name in tier1_required:
+            domain = by_name[mp_name]["domain"]
+            if grouped_hits.get(domain):
+                tier1_status[mp_name] = "CANDIDATES_FOUND"
+            elif mp_name in marketplace_search_errors:
+                tier1_status[mp_name] = "ERROR"
+            else:
+                tier1_status[mp_name] = "CHECKED_NOT_FOUND"
+        tier1_errors = set(marketplace_search_errors)
+        log(
+            "SEARCH MATRIX SUMMARY: "
+            + " | ".join(
+                f"{m['name']}={len(grouped_hits.get(m['domain'], []))}" for m in market_cfg
+            )
+            + f" | other_ua={len(grouped_hits.get('__other__', []))}"
+        )
 
         # v0.9 PERFORMANCE: fetch candidate pages in parallel into the shared cache.
         _prefetch_pages(
@@ -585,6 +728,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                     "marketplace": mp["name"],
                     "match_score": round(match, 1),
                     "price_source": price_source,
+                    "search_query": hit.get("search_query", ""),
                 }
 
                 offer_rows.append({
@@ -602,6 +746,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                     "Match %": round(match, 1),
                     "Match статус": match_info["status"],
                     "Match причина": match_info["reason"],
+                    "Пошуковий запит": hit.get("search_query", ""),
                     "URL": final_prod["url"],
                     "PriceIntel": app_version,
                     "Автор": brand_author,
@@ -707,6 +852,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                 "marketplace": "Інші магазини",
                 "match_score": round(match, 1),
                 "price_source": price_source,
+                "search_query": hit.get("search_query", ""),
             }
             offer_rows.append({
                 "Код товара": row["Код товара"],
@@ -723,6 +869,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                 "Match %": round(match, 1),
                 "Match статус": match_info["status"],
                 "Match причина": match_info["reason"],
+                "Пошуковий запит": hit.get("search_query", ""),
                 "URL": url,
                 "PriceIntel": app_version,
                 "Автор": brand_author,
@@ -736,10 +883,18 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
             accepted_other.append(final_other)
             log(f"  OTHER ACCEPT: {host} price={chosen_price} source={price_source} match={match:.1f}")
 
-        # v0.8 BALANCED MARKET: one representative median price per independent
-        # marketplace/host. This prevents 5 Prom listings from outweighing one
-        # Rozetka listing, while validated other-UA shops can now influence the
-        # market statistics and verdict.
+        # v1.2.2 SECOND VERIFICATION GATE: after exact-product matching, remove
+        # obvious price-extraction anomalies from market statistics without
+        # spending additional Serper credits.
+        accepted, accepted_other, post_suspicious_market, post_suspicious_other = _post_verify_price_outliers(
+            accepted, accepted_other, row.get("Цена"), offer_rows, cfg, log
+        )
+        suspicious_prices.extend(post_suspicious_market)
+        suspicious_other.extend(post_suspicious_other)
+
+        # BALANCED MARKET: one representative median price per independent
+        # marketplace/host. This prevents one marketplace with many listings from
+        # dominating the market median.
         balanced_offers = _balanced_market_offers(accepted, accepted_other)
         st = stats(balanced_offers, row.get("Цена"))
 
@@ -789,6 +944,22 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
 
         sellers_found = len(raw_valid_offers)
         market_sources = len(balanced_offers)
+
+        # Final Tier-1 state is based on VERIFIED exact offers, not merely on
+        # search candidates. This keeps "candidate found" distinct from
+        # "exact competitor accepted".
+        if deep_scan_enabled:
+            for mp_name in tier1_required:
+                domain = by_name[mp_name]["domain"]
+                has_exact = any(x.get("marketplace") == mp_name for x in accepted)
+                if has_exact:
+                    tier1_status[mp_name] = "EXACT_FOUND"
+                elif grouped_hits.get(domain):
+                    tier1_status[mp_name] = "CANDIDATES_REJECTED"
+                elif mp_name in marketplace_search_errors:
+                    tier1_status[mp_name] = "ERROR"
+                else:
+                    tier1_status[mp_name] = "CHECKED_NOT_FOUND"
         tier1_checked = sum(1 for x in tier1_status.values() if x != "ERROR") if deep_scan_enabled else 0
         tier1_found = sum(1 for mp in tier1_required if marketplace_prices.get(mp)) if deep_scan_enabled else 0
         tier1_total = len(tier1_required) if deep_scan_enabled else 0
@@ -869,7 +1040,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
             "Магазини": other_shops,
             "Пропозицій інших магазинів": len(accepted_other),
             "Найдено продавців": sellers_found,
-            "= моїй ціні": same_price_count,
+            "За моєю ціною": same_price_count,
             "Достовірність": market_confidence,
             "Підозрілих цін": len(all_suspicious),
             "Запас, грн": market_reserve_uah,

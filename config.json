@@ -58,8 +58,8 @@
   "page_fetch_workers": 6,
   "request_timeout_seconds": 12,
   "app_name": "PUMA Platform",
-  "app_version": "v1.2.1",
-  "release_name": "Deep Scan Exact Hotfix",
+  "app_version": "v1.2.3",
+  "release_name": "Universal Marketplace Search Matrix",
   "brand_author": "Пума (Чернявський А.)",
   "brand_line": "Made by Пума (Чернявський А.)",
   "adaptive_search_enabled": false,
@@ -79,12 +79,22 @@
     "Hotline"
   ],
   "tier1_recovery_enabled": true,
-  "tier1_recovery_max_queries": 3,
+  "tier1_recovery_max_queries": 8,
   "tier1_require_complete_for_hot_verdict": true,
   "accepted_match_statuses": [
     "EXACT"
   ],
   "exact_product_match_enabled": true,
   "marketplace_competitor_collection": true,
-  "quality_first_mode": true
+  "quality_first_mode": true,
+  "price_consensus_verification_enabled": true,
+  "price_consensus_ratio_limit": 3.0,
+  "price_consensus_min_peer_refs": 2,
+  "search_matrix_enabled": true,
+  "search_matrix_max_queries": 8,
+  "broad_search_matrix_max_queries": 6,
+  "marketplace_search_matrix_max_queries": 8,
+  "marketplace_search_matrix_run_all": true,
+  "marketplace_candidate_pool_target": 5,
+  "marketplace_min_queries_before_stop": 2
 }
