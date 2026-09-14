@@ -35,5 +35,6 @@
   "serper_num_results": 50,
   "serper_cache_seconds": 259200,
   "page_cache_seconds": 86400,
-  "search_price_match_threshold": 90
+  "search_price_match_threshold": 90,
+  "serper_price_ratio_limit": 3.0
 }

@@ -64,6 +64,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
             progress_cb(i - 1, len(rows), product_name, f"Пошук: {product_name}")
 
         accepted = []
+        suspicious_prices = []
         domains = [m["domain"] for m in market_cfg]
 
         try:
@@ -151,6 +152,34 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                     log("  REJECT: no price extracted or safe search-price hint")
                     continue
 
+                # Price Validation v1:
+                # Serper fallback prices are useful when a marketplace blocks us,
+                # but snippets can contain installment/monthly-payment numbers.
+                # If a Serper-only price differs from our own price by more than
+                # the configured ratio, keep it in the offers report but EXCLUDE
+                # it from market statistics and the final verdict.
+                price_status = "ПІДТВЕРДЖЕНА"
+                price_reason = ""
+                own_price_num = None
+                try:
+                    own_price_num = float(row.get("Цена")) if row.get("Цена") not in (None, "", 0) else None
+                except (TypeError, ValueError):
+                    own_price_num = None
+
+                ratio_limit = float(cfg.get("serper_price_ratio_limit", 3.0))
+                suspicious = False
+                if price_source == "serper" and own_price_num and chosen_price:
+                    try:
+                        candidate_price_num = float(chosen_price)
+                        if candidate_price_num > 0:
+                            ratio = max(candidate_price_num / own_price_num, own_price_num / candidate_price_num)
+                            if ratio > ratio_limit:
+                                suspicious = True
+                                price_status = "⚠️ ЦІНА НЕ ПІДТВЕРДЖЕНА"
+                                price_reason = f"Serper fallback differs from own price by {ratio:.2f}x (> {ratio_limit:.2f}x)"
+                    except (TypeError, ValueError, ZeroDivisionError):
+                        pass
+
                 final_prod = {
                     "title": candidate_title,
                     "price": chosen_price,
@@ -160,7 +189,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                     "match_score": round(match, 1),
                     "price_source": price_source,
                 }
-                accepted.append(final_prod)
+
                 offer_rows.append({
                     "Код товара": row["Код товара"],
                     "Категория": row.get("Категория", ""),
@@ -170,15 +199,30 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
                     "Название конкурента": final_prod["title"],
                     "Цена конкурента": final_prod["price"],
                     "Источник цены": price_source,
+                    "Статус цены": price_status,
+                    "Причина проверки": price_reason,
                     "Match %": round(match, 1),
                     "URL": final_prod["url"],
                 })
+
+                if suspicious:
+                    suspicious_prices.append(final_prod)
+                    log(
+                        f"  SUSPICIOUS PRICE: {mp['name']} price={chosen_price} "
+                        f"source={price_source} match={match:.1f} -> EXCLUDED FROM STATS"
+                    )
+                    continue
+
+                accepted.append(final_prod)
                 log(f"  ACCEPT: {mp['name']} price={chosen_price} source={price_source} match={match:.1f}")
 
             if canceled:
                 break
 
         st = stats(accepted, row.get("Цена"))
+
+        if not accepted and suspicious_prices:
+            st["verdict"] = "⚠️ ЦІНА НЕ ПІДТВЕРДЖЕНА"
 
         own_price = row.get("Цена")
         market_reserve_uah = None
@@ -191,7 +235,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
             except (TypeError, ValueError):
                 pass
 
-        log(f"PRODUCT RESULT: accepted={len(accepted)} min={st['min_price']} median={st['median']} reserve={market_reserve_uah} reserve_pct={market_reserve_pct} score={st['price_score']} verdict={st['verdict']}")
+        log(f"PRODUCT RESULT: accepted={len(accepted)} suspicious={len(suspicious_prices)} min={st['min_price']} median={st['median']} reserve={market_reserve_uah} reserve_pct={market_reserve_pct} score={st['price_score']} verdict={st['verdict']}")
         results.append({
             **row,
             "Постачальник": supplier,
@@ -201,6 +245,7 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
             "Средняя рынка": round(st["avg"], 2) if st["avg"] else None,
             "Макс. рынка": st["max_price"],
             "Предложений": st["offers_count"],
+            "Підозрілих цін": len(suspicious_prices),
             "Разница с медианой %": round(st["delta_median_pct"], 2) if st["delta_median_pct"] is not None else None,
             "Запас до рынка, грн": market_reserve_uah,
             "Запас до рынка, %": market_reserve_pct,
@@ -223,7 +268,8 @@ def run_analysis(input_csv, output_csv, offers_csv, limit=30, marketplaces=None,
     offer_fields = [
         "Код товара", "Категория", "Постачальник", "Артикул",
         "Маркетплейс", "Название конкурента",
-        "Цена конкурента", "Источник цены", "Match %", "URL",
+        "Цена конкурента", "Источник цены", "Статус цены",
+        "Причина проверки", "Match %", "URL",
     ]
     if offer_rows:
         write_csv(offers_csv, offer_rows, offer_fields)

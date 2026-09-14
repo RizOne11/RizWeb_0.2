@@ -42,3 +42,12 @@
 - Added `Запас до рынка, %` = reserve divided by own price.
 - Both fields are included in the browser report and main CSV.
 - Positive value means the market median is above your price; negative means your price is above the median.
+
+## v0.4.3 — Price Validation
+- Serper fallback prices are checked against the supplier/own price.
+- Default anomaly threshold: >3x difference (`serper_price_ratio_limit` in config.json).
+- Suspicious Serper prices remain visible in the competitor-offers CSV.
+- Suspicious prices are excluded from MIN / MEDIAN / AVG / MAX / Price Score / verdict calculations.
+- If a product has only suspicious prices, verdict becomes `⚠️ ЦІНА НЕ ПІДТВЕРДЖЕНА`.
+- Main report includes `Підозрілих цін`.
+- Offers report includes `Статус цены` and `Причина проверки`.
