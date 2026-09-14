@@ -32,5 +32,8 @@
   "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
   "search_gl": "ua",
   "search_hl": "uk",
-  "serper_num_results": 50
+  "serper_num_results": 50,
+  "serper_cache_seconds": 259200,
+  "page_cache_seconds": 86400,
+  "search_price_match_threshold": 90
 }

@@ -68,6 +68,10 @@ def worker(job_id, input_path, limit, selected_markets):
 
     try:
         set_job(job_id, status="running", message="Читаємо каталог…", started_at=time.time())
+        def cancel_requested():
+            job = get_job(job_id) or {}
+            return bool(job.get("cancel_requested"))
+
         summary = run_analysis(
             str(input_path),
             str(results_path),
@@ -76,10 +80,16 @@ def worker(job_id, input_path, limit, selected_markets):
             marketplaces=selected_markets,
             progress_cb=progress,
             log_cb=log,
+            cancel_cb=cancel_requested,
         )
-        set_job(job_id, status="done", percent=100, message="Готово",
-                finished_at=time.time(), summary=summary,
-                results_file=str(results_path), offers_file=str(offers_path))
+        if summary.get("canceled"):
+            set_job(job_id, status="canceled", message="Аналіз зупинено користувачем",
+                    finished_at=time.time(), summary=summary,
+                    results_file=str(results_path), offers_file=str(offers_path))
+        else:
+            set_job(job_id, status="done", percent=100, message="Готово",
+                    finished_at=time.time(), summary=summary,
+                    results_file=str(results_path), offers_file=str(offers_path))
     except Exception as e:
         log(f"FATAL {type(e).__name__}: {e}")
         set_job(job_id, status="error", message=str(e), finished_at=time.time())
@@ -133,17 +143,28 @@ def job_status(job_id):
     if not job:
         abort(404)
     safe = {k: v for k, v in job.items() if k not in {"results_file", "offers_file"}}
-    if job.get("status") == "done":
+    if job.get("status") in {"done", "canceled"}:
         safe["results_url"] = url_for("download_results", job_id=job_id)
         safe["offers_url"] = url_for("download_offers", job_id=job_id)
         safe["preview_url"] = url_for("preview", job_id=job_id)
     return jsonify(safe)
 
 
+@app.post("/api/jobs/<job_id>/cancel")
+def cancel_job(job_id):
+    job = get_job(job_id)
+    if not job:
+        abort(404)
+    if job.get("status") in {"done", "error", "canceled"}:
+        return jsonify({"ok": False, "status": job.get("status")})
+    set_job(job_id, cancel_requested=True, message="Зупиняємо аналіз…")
+    return jsonify({"ok": True, "status": "cancel_requested"})
+
+
 @app.get("/jobs/<job_id>/preview")
 def preview(job_id):
     job = get_job(job_id)
-    if not job or job.get("status") != "done":
+    if not job or job.get("status") not in {"done", "canceled"}:
         abort(404)
     path = Path(job["results_file"])
     rows = []
@@ -159,14 +180,14 @@ def preview(job_id):
 @app.get("/jobs/<job_id>/results")
 def download_results(job_id):
     job = get_job(job_id)
-    if not job or job.get("status") != "done": abort(404)
+    if not job or job.get("status") not in {"done", "canceled"}: abort(404)
     return send_file(job["results_file"], as_attachment=True, download_name="market_analysis.csv")
 
 
 @app.get("/jobs/<job_id>/offers")
 def download_offers(job_id):
     job = get_job(job_id)
-    if not job or job.get("status") != "done": abort(404)
+    if not job or job.get("status") not in {"done", "canceled"}: abort(404)
     p = Path(job["offers_file"])
     if not p.exists():
         p.write_text("Код товара;Артикул;Маркетплейс;Название конкурента;Цена конкурента;Match %;URL\n", encoding="utf-8-sig")
