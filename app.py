@@ -54,6 +54,8 @@ def get_job(job_id):
 
 
 def worker(job_id, input_path, limit, selected_markets):
+    def log(message):
+        print(f"[PRICEINTEL {job_id}] {message}", flush=True)
     job_dir = JOBS_DIR / job_id
     results_path = job_dir / "market_analysis.csv"
     offers_path = job_dir / "market_analysis_offers.csv"
@@ -72,11 +74,13 @@ def worker(job_id, input_path, limit, selected_markets):
             limit=limit,
             marketplaces=selected_markets,
             progress_cb=progress,
+            log_cb=log,
         )
         set_job(job_id, status="done", percent=100, message="Готово",
                 finished_at=time.time(), summary=summary,
                 results_file=str(results_path), offers_file=str(offers_path))
     except Exception as e:
+        log(f"FATAL {type(e).__name__}: {e}")
         set_job(job_id, status="error", message=str(e), finished_at=time.time())
 
 

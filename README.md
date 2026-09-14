@@ -25,3 +25,12 @@ docker run -p 8080:8080 priceintel
 Поточна версія використовує пошукову видачу DuckDuckGo як discovery-шар і потім читає публічні сторінки товарів. Маркетплейси можуть змінювати HTML, обмежувати автоматичні запити або повертати CAPTCHA. Для 400 000 товарів наступна версія повинна мати окрему чергу завдань, проксі/ліміти відповідно до правил джерел, централізовану БД, історію цін та планувальник повторних перевірок.
 
 На MVP ставте 30–100 товарів для перевірки якості матчінгу. Серверний ліміт керується `MAX_PRODUCTS_PER_JOB`.
+
+
+## v0.2.2
+Покращено завантаження CSV: видиме підтвердження вибору файлу, drag-and-drop, перевірка розширення.
+
+## v0.2.3 DEBUG
+- Detailed Render stdout logs for every product, marketplace, HTTP request, extraction and match decision.
+- Search fallbacks: DuckDuckGo HTML -> DuckDuckGo Lite -> Bing.
+- More browser-like request headers.
