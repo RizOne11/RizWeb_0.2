@@ -27,6 +27,68 @@ COLOR_ALIASES = {
 }
 COLOR_WORDS = set(COLOR_ALIASES)
 
+# Sub-brand groups: a marketplace may list the product under a sub-brand
+# (Redmi/POCO are Xiaomi; Honor was originally Huawei) while the supplier
+# catalog stores the parent brand. Any alias in the same group counts as the
+# brand being present. Add more groups here as needed — one line per family.
+BRAND_ALIASES = {
+    "xiaomi": {"xiaomi", "redmi", "poco", "mi"},
+    "huawei": {"huawei", "honor"},
+    "samsung": {"samsung", "galaxy"},
+}
+
+
+def _brand_group(brand_c: str):
+    for canonical, aliases in BRAND_ALIASES.items():
+        if brand_c == canonical or brand_c in aliases:
+            return aliases | {canonical}
+    return {brand_c} if brand_c else set()
+
+
+# RU/UA product-word equivalents. Supplier titles are usually Russian while
+# Ukrainian marketplaces list in Ukrainian, which drags down token_set_ratio
+# even for an identical product. Both sides are folded to the RU form here
+# before scoring. Extend this list with more word pairs as new gaps show up.
+RU_UA_SYNONYMS = {
+    "монітор": "монитор",
+    "багатофункціональний": "многофункциональный",
+    "багатофункціональною": "многофункциональной",
+    "підставка": "подставка",
+    "підставкою": "подставкой",
+    "ігровий": "игровой",
+    "ігрова": "игровая",
+    "навушники": "наушники",
+    "клавіатура": "клавиатура",
+    "миша": "мышь",
+    "екран": "экран",
+    "зарядний": "зарядное",
+    "пристрій": "устройство",
+    "чохол": "чехол",
+    "відеокарта": "видеокарта",
+    "процесор": "процессор",
+    "пам'ять": "память",
+    "жорсткий": "жесткий",
+    "диск": "диск",
+    "живлення": "питание",
+    "мікрофон": "микрофон",
+    "гарнітура": "гарнитура",
+    "роз'єм": "разъем",
+    "функція": "функция",
+    "новий": "новый",
+    "оригінал": "оригинал",
+    "гарантія": "гарантия",
+    "чорний": "черный",
+    "білий": "белый",
+    "сірий": "серый",
+    "синій": "синий",
+    "зелений": "зеленый",
+    "жовтий": "желтый",
+    "рожевий": "розовый",
+    "срібний": "серебристый",
+    "золотий": "золотой",
+    "червоний": "красный",
+}
+
 VARIANT_RE = re.compile(
     r"\b\d+(?:[.,]\d+)?\s?(?:gb|tb|mb|гб|тб|мб|w|kw|вт|квт|mah|мач|ml|мл|l|л|kg|кг|g|гр|mm|мм|cm|см|inch|hz|гц|v|в|\")(?=\s|$|[^A-Za-zА-Яа-яІіЇїЄєҐґ0-9])",
     re.I,
@@ -40,7 +102,12 @@ MODEL_RE = re.compile(
 def norm(s: str) -> str:
     s = (s or "").lower().replace("’", "'")
     s = re.sub(r"[^a-zа-яіїєґ0-9+._/-]+", " ", s, flags=re.I)
-    return " ".join(t for t in s.split() if t not in STOP)
+    tokens = []
+    for t in s.split():
+        if t in STOP:
+            continue
+        tokens.append(RU_UA_SYNONYMS.get(t, t))
+    return " ".join(tokens)
 
 
 def compact(s: str) -> str:
@@ -178,7 +245,8 @@ def classify_match(row, candidate_title: str, candidate_url: str = "", candidate
 
     supplier_sku_hit = bool(sku_c and len(sku_c) >= 4 and sku_c in hay_c)
     sku_distinctive = _sku_distinctive(fp["sku"])
-    brand_present = bool(brand_c and brand_c in hay_c)
+    brand_group = _brand_group(brand_c)
+    brand_present = bool(brand_group and any(alias in hay_c for alias in brand_group))
     brand_required = bool(brand_c)
     matched_models = [m for m in fp["models"] if compact(m) in hay_c]
 
