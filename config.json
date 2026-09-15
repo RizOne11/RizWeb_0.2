@@ -1,0 +1,119 @@
+{
+  "marketplaces": [
+    {
+      "name": "Rozetka",
+      "domain": "rozetka.com.ua"
+    },
+    {
+      "name": "Prom",
+      "domain": "prom.ua"
+    },
+    {
+      "name": "Epicentr",
+      "domain": "epicentrk.ua"
+    },
+    {
+      "name": "Allo",
+      "domain": "allo.ua"
+    },
+    {
+      "name": "Foxtrot",
+      "domain": "foxtrot.com.ua"
+    },
+    {
+      "name": "Comfy",
+      "domain": "comfy.ua"
+    },
+    {
+      "name": "Kasta",
+      "domain": "kasta.ua"
+    },
+    {
+      "name": "Hotline",
+      "domain": "hotline.ua"
+    }
+  ],
+  "max_results_per_marketplace": 20,
+  "request_delay_seconds": 0.25,
+  "match_threshold": 72,
+  "currency": "UAH",
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+  "search_gl": "ua",
+  "search_hl": "uk",
+  "serper_num_results": 100,
+  "serper_cache_seconds": 259200,
+  "page_cache_seconds": 86400,
+  "search_price_match_threshold": 90,
+  "serper_price_ratio_limit": 3.0,
+  "cascade_search_enabled": true,
+  "cascade_min_hits": 3,
+  "cascade_max_queries": 3,
+  "same_price_tolerance_uah": 1.0,
+  "other_ua_shops_enabled": true,
+  "other_ua_shops_affect_score": true,
+  "other_ua_shops_max_hits": 80,
+  "serper_usd_per_1000": 1.0,
+  "serper_forecast_requests_per_product": 8.0,
+  "market_overprice_red_pct": 10.0,
+  "page_fetch_workers": 6,
+  "request_timeout_seconds": 12,
+  "app_name": "PUMA Platform",
+  "app_version": "v1.2.6",
+  "release_name": "Coverage-First Exact Market Orchestrator",
+  "brand_author": "Пума (Чернявський А.)",
+  "brand_line": "Made by Пума (Чернявський А.)",
+  "adaptive_search_enabled": false,
+  "adaptive_min_candidate_sources": 4,
+  "analysis_module_name": "доПУМАгатель",
+  "content_module_name": "ПереводоПУМОгатель",
+  "sku_lock": true,
+  "deep_scan_enabled": true,
+  "tier1_required_marketplaces": [
+    "Rozetka",
+    "Epicentr",
+    "Prom",
+    "Allo",
+    "Foxtrot",
+    "Comfy",
+    "Kasta",
+    "Hotline"
+  ],
+  "tier1_recovery_enabled": true,
+  "tier1_recovery_max_queries": 8,
+  "tier1_require_complete_for_hot_verdict": true,
+  "accepted_match_statuses": [
+    "EXACT",
+    "HIGH"
+  ],
+  "exact_product_match_enabled": true,
+  "marketplace_competitor_collection": true,
+  "quality_first_mode": true,
+  "price_consensus_verification_enabled": true,
+  "price_consensus_ratio_limit": 3.0,
+  "price_consensus_min_peer_refs": 2,
+  "search_matrix_enabled": true,
+  "search_matrix_max_queries": 6,
+  "broad_search_matrix_max_queries": 1,
+  "marketplace_search_matrix_max_queries": 1,
+  "marketplace_search_matrix_run_all": false,
+  "marketplace_candidate_pool_target": 2,
+  "marketplace_min_queries_before_stop": 0,
+  "marketplace_candidate_expansion_queries": 0,
+  "marketplace_candidate_expansion_below": 2,
+  "firecrawl_search_enabled": true,
+  "firecrawl_page_verification_enabled": true,
+  "exa_search_enabled": true,
+  "serper_search_enabled": true,
+  "external_search_timeout_seconds": 45,
+  "in_stock_only": true,
+  "market_scope": "UA",
+  "availability_unknown_policy": "verify_then_skip",
+  "provider_recovery_min_hits": 2,
+  "firecrawl_keyless_enabled": false,
+  "serper_safe_query_mode": true,
+  "serper_supports_site_operator": true,
+  "verify_candidates_per_marketplace": 8,
+  "candidate_prefilter_score_without_mpn": 90,
+  "firecrawl_min_interval_seconds": 6.2,
+  "firecrawl_rate_limit_retries": 2
+}
