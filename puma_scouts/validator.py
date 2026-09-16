@@ -63,12 +63,13 @@ def _type_conflict(source_text: str, offer_text: str) -> str | None:
     a,b=_type_groups(source_text),_type_groups(offer_text)
     return f"product type mismatch: expected {sorted(a)}, got {sorted(b)}" if a and b and a.isdisjoint(b) else None
 
+
 def _accessory_conflict(source_text: str, offer_text: str) -> str | None:
     src, off = _norm(source_text), _norm(offer_text)
     accessory_patterns = {
         "case/accessory": r"\b(?:чохол|чехол|кейс|футляр|накладка|бампер)\b",
         "screen protector": r"\b(?:плівка|пленка|скло|стекло)\b.*\b(?:захис|защит|гідрогел|гидрогел)\w*\b|\b(?:захис|защит|гідрогел|гидрогел)\w*\b.*\b(?:плівка|пленка|скло|стекло)\b",
-        "replacement display": r"\b(?:дисплей|екран|экран|тачскрин|сенсор)\b.*\b(?:рамк|модул|replacement|заміна|замена)\w*\b",
+        "replacement display": r"\b(?:дисплей|display|екран|экран|тачскрин|сенсор)\b",
         "ear tips": r"\b(?:амбушюр|ear\s*tips?)\w*\b",
         "single earbud": r"\b(?:left|right|лівий|правий|левый|правый)\b.*\b(?:airpods|навушник|наушник)\w*\b|\b(?:airpods|навушник|наушник)\w*\b.*\b(?:left|right|лівий|правий|левый|правый)\b",
         "charging case only": r"\b(?:airpods|навушник|наушник)\w*\b.*\bcase\b|\bcase\b.*\b(?:airpods|навушник|наушник)\w*\b",
@@ -92,7 +93,6 @@ def _condition_conflict(source_text: str, offer_text: str) -> str | None:
 def _authenticity_conflict(source_text: str, offer_text: str) -> str | None:
     src, off = _norm(source_text), _norm(offer_text)
     explicit_clone = r"\b(?:реплік\w*|реплик\w*|копі\w*|копи\w*|аналог\w*|clone|copy|airoha)\b"
-    # Only apply when the source mission identifies a branded original; never infer from price alone.
     branded_original = bool(re.search(r"\b(?:apple|samsung|xiaomi|sony|bose|jbl)\b", src, re.I))
     if branded_original and re.search(explicit_clone, off, re.I) and not re.search(explicit_clone, src, re.I): return "authenticity mismatch: explicit replica/clone marker"
     return None
@@ -104,6 +104,7 @@ def _pack_count(text: str) -> int | None:
         m=re.search(pattern,norm,re.I)
         if m and int(m.group(1))>1: return int(m.group(1))
     return None
+
 def _quantity_conflict(source_text: str, offer_text: str, *, strong_identity: bool=False) -> str | None:
     expected=_pack_count(source_text)
     if not expected: return None
@@ -116,6 +117,7 @@ def _key_measurements(text: str) -> set[tuple[str,str]]:
     norm=_norm(text); aliases={"г":"g","гр":"g","g":"g","кг":"kg","kg":"kg","вт":"w","w":"w","мм":"mm","mm":"mm","мл":"ml","ml":"ml"}; out=set()
     for value,unit in re.findall(r"\b(\d+(?:[.,]\d+)?)\s*(кг|kg|гр|г|g|вт|w|мм|mm|мл|ml)\b",norm,re.I): out.add((value.replace(",","."),aliases[unit.casefold()]))
     return out
+
 def _measurement_conflict(source_text: str, offer_text: str) -> str | None:
     expected,actual=_key_measurements(source_text),_key_measurements(offer_text)
     for value,unit in expected:
