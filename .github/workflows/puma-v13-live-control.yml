@@ -6,6 +6,7 @@ on:
       - .github/workflows/puma-v13-live-control.yml
       - puma_scouts/production.py
       - puma_scouts/validator.py
+      - puma_scouts/variant_engine.py
       - puma_scouts/scouts/**
   workflow_dispatch:
 jobs:
@@ -18,23 +19,29 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - name: Diagnose Xiaomi source by source
+      - name: Trace Xiaomi discovery and validation
         run: |
           python - <<'PY'
           import asyncio,json,time
           from puma_scouts.models import ProductMission
-          from puma_scouts.production import scan
+          from puma_scouts.production import scouts
           m=ProductMission(article='SUPPLIER-SKU-LOCK-ONLY',source_data={'name':'Монітор 27 2K Xiaomi Redmi A27Q 2025 100 Гц IPS HDR10 чорний','brand':'Xiaomi','model':'P27QCB-RA'})
           async def main():
-            out={}
-            for source in ['prom','epicentr','hotline','web_shops']:
+            total=0
+            for scout in scouts(['prom','epicentr','hotline','web_shops']):
               t=time.monotonic()
               try:
-                rows=await scan(m,[source]);out[source]={'seconds':round(time.monotonic()-t,2),'offers':len(rows),'rows':[{'price':r['price'],'title':r['found_title'],'url':r['url'],'match':r['match'],'health':r['health']} for r in rows]}
-              except Exception as e:out[source]={'seconds':round(time.monotonic()-t,2),'error':type(e).__name__+': '+str(e)}
-              print('PUMA_SOURCE_'+source.upper()+'='+json.dumps(out[source],ensure_ascii=False),flush=True)
-            return out
-          result=asyncio.run(main());print('PUMA_SOURCE_DIAGNOSTIC='+json.dumps(result,ensure_ascii=False))
+                report=await scout.scan(m)
+                offers=[]
+                for v in report.offers:
+                  o=v.offer
+                  offers.append({'verdict':v.verdict.value,'score':round(v.score,3),'price':float(o.price) if o.price is not None else None,'title':o.title,'url':str(o.url),'positive':v.positive_evidence,'conflicts':v.conflicts,'rejection':v.rejection_reasons})
+                total+=len(offers)
+                print('PUMA_TRACE_'+scout.marketplace.value.upper()+'='+json.dumps({'seconds':round(time.monotonic()-t,2),'health':report.health.value,'offers':offers},ensure_ascii=False),flush=True)
+              except Exception as e:
+                print('PUMA_TRACE_'+scout.marketplace.value.upper()+'='+json.dumps({'seconds':round(time.monotonic()-t,2),'error':type(e).__name__+': '+str(e)},ensure_ascii=False),flush=True)
+            print('PUMA_TRACE_TOTAL_VALIDATED='+str(total))
+          asyncio.run(main())
           PY
       - name: Control Xiaomi aggregate and Prom dedup
         run: |
