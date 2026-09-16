@@ -9,56 +9,56 @@
 <body>
 <main class="wrap">
   <section class="hero">
-    <div class="badge">доПУМАгатель • {{app_version}}</div>
+    <div class="badge">доПУМАгатель • PUMA v1.3</div>
     <h1>доПУМАгатель</h1>
-    <p>Завантаж YML або CSV постачальника. PriceIntel порівняє твою ціну з ринком, відфільтрує чужі моделі, збалансує незалежні джерела та поставить Price Score.</p>
+    <p>Завантаж Excel з товарами. PUMA знайде той самий фізичний товар, збере реальні пропозиції та ціни й підготує звіт.</p>
   </section>
 
   <section class="card">
     <form action="/analyze" method="post" enctype="multipart/form-data" id="analysis-form">
       <label class="drop" id="drop-zone" for="catalog-input">
-        <input id="catalog-input" type="file" name="catalog" accept=".yml,.xml,.csv,text/xml,application/xml,text/csv" required>
-        <span class="drop-title" id="drop-title">📄 Вибрати YML / CSV</span>
-        <span class="muted" id="file-status">Натисни сюди або перетягни YML або CSV у це поле</span>
+        <input id="catalog-input" type="file" name="catalog" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required>
+        <span class="drop-title" id="drop-title">📊 Вибрати Excel (.xlsx)</span>
+        <span class="muted" id="file-status">Натисни сюди або перетягни Excel у це поле</span>
         <span class="file-pill hidden" id="file-pill"></span>
       </label>
 
       <div class="grid">
         <label>Постачальник
-          <input name="supplier" type="text" placeholder="Напр. ERC, Brain, Юг-Контракт" required>
+          <input name="supplier" type="text" placeholder="Необов'язково">
         </label>
         <label>Скільки товарів аналізувати зараз?
           <input name="limit" type="number" value="30" min="1" max="5000">
         </label>
         <div>
-          <div class="label">Маркетплейси</div>
+          <div class="label">Production sources</div>
           <div class="checks">
-            {% for m in marketplaces %}
-              <label><input type="checkbox" name="marketplaces" value="{{m.name}}" checked> {{m.name}}</label>
-            {% endfor %}
+            <label><input type="checkbox" name="marketplaces" value="prom" checked> Prom</label>
+            <label><input type="checkbox" name="marketplaces" value="epicentr" checked> Epicentr</label>
+            <label><input type="checkbox" name="marketplaces" value="hotline" checked> Hotline</label>
+            <label><input type="checkbox" name="marketplaces" value="web_shops" checked> WEB_SHOPS</label>
           </div>
         </div>
       </div>
 
-      <div class="cost-box" id="cost-box">
-        <b>💵 Прогноз Serper:</b> <span id="cost-forecast">—</span>
-        <div class="muted">Оцінка до запуску. Кеш та адаптивний пошук можуть зменшити фактичну кількість платних запитів.</div>
+      <div class="cost-box">
+        <b>🐆 Production v1.3</b>
+        <div class="muted">Без платного Serper/Firecrawl. Артикул постачальника зберігається як SKU Lock, але не використовується як основний пошуковий запит.</div>
       </div>
-      <button class="primary" id="submit-btn" type="submit">🚀 Почати аналіз</button>
-      <p class="hint">v1.2: YML/CSV + SKU Lock + стара ціна/знижка + ядро v1.0 без змін.</p>
+      <button class="primary" id="submit-btn" type="submit">🚀 Аналізувати</button>
+      <p class="hint">Результат: пропозиції по картках + групування «ціна → кількість карток» + посилання.</p>
     </form>
   </section>
 
   <section class="mini">
-    <div><b>Adaptive Search</b><span>копає глибше лише коли незалежних джерел замало</span></div>
-    <div><b>Checkpoint / Resume</b><span>можна продовжити після зупинки або обриву</span></div>
-    <div><b>Release Metrics</b><span>час, товари/хв, покриття, джерела та API-витрати</span></div>
+    <div><b>Exact Product</b><span>позитивні ознаки підтверджують товар; відсутні характеристики самі по собі не є конфліктом</span></div>
+    <div><b>Price Distribution</b><span>збираємо різні валідні картки та групуємо їх за ціною</span></div>
+    <div><b>Free Sources</b><span>Prom • Epicentr • Hotline • незалежні українські WEB_SHOPS</span></div>
   </section>
 
   <div class="actions"><a class="secondary link" href="/">← PUMA Platform</a><a class="secondary link" href="/content">ПереводоПУМОгатель →</a></div>
-  <footer class="brand-footer">{{brand_line}} • {{app_name}} {{app_version}}</footer>
+  <footer class="brand-footer">{{brand_line}} • PUMA Platform v1.3</footer>
 </main>
-
 <script>
 (() => {
   const input = document.getElementById('catalog-input');
@@ -68,71 +68,34 @@
   const pill = document.getElementById('file-pill');
   const form = document.getElementById('analysis-form');
   const submit = document.getElementById('submit-btn');
-  const limitInput = form.querySelector('input[name="limit"]');
-  const forecastEl = document.getElementById('cost-forecast');
-  const requestsPerProduct = Number({{forecast_requests_per_product|tojson}});
-  const usdPer1000 = Number({{serper_usd_per_1000|tojson}});
-
-  function updateForecast() {
-    const products = Math.max(1, parseInt(limitInput.value || '1', 10));
-    const requests = Math.ceil(products * requestsPerProduct);
-    const usd = requests * usdPer1000 / 1000;
-    forecastEl.textContent = `≈ ${requests.toLocaleString('uk-UA')} API-запитів • ≈ $${usd.toFixed(2)}`;
-  }
-  limitInput.addEventListener('input', updateForecast);
-  updateForecast();
-
   function formatSize(bytes) {
     if (bytes < 1024) return bytes + ' B';
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
     return (bytes / 1024 / 1024).toFixed(1) + ' MB';
   }
-
   function showFile(file) {
     if (!file) return;
-    const n = file.name.toLowerCase();
-    const isSupported = n.endsWith('.csv') || n.endsWith('.yml') || n.endsWith('.xml');
-    if (!isSupported) {
+    if (!file.name.toLowerCase().endsWith('.xlsx')) {
       input.value = '';
-      drop.classList.remove('has-file');
-      drop.classList.add('bad-file');
-      title.textContent = '⚠️ Потрібен YML або CSV';
+      drop.classList.remove('has-file'); drop.classList.add('bad-file');
+      title.textContent = '⚠️ Потрібен Excel .xlsx';
       status.textContent = 'Обраний файл має інше розширення.';
-      pill.classList.add('hidden');
-      return;
+      pill.classList.add('hidden'); return;
     }
-    drop.classList.remove('bad-file');
-    drop.classList.add('has-file');
-    title.textContent = '✅ Файл вибрано';
-    status.textContent = 'Можна запускати аналіз';
-    pill.textContent = file.name + ' • ' + formatSize(file.size);
-    pill.classList.remove('hidden');
+    drop.classList.remove('bad-file'); drop.classList.add('has-file');
+    title.textContent = '✅ Excel вибрано'; status.textContent = 'Можна запускати аналіз';
+    pill.textContent = file.name + ' • ' + formatSize(file.size); pill.classList.remove('hidden');
   }
-
   input.addEventListener('change', () => showFile(input.files[0]));
-  ['dragenter','dragover'].forEach(evt => drop.addEventListener(evt, e => {
-    e.preventDefault(); drop.classList.add('dragging');
-  }));
-  ['dragleave','drop'].forEach(evt => drop.addEventListener(evt, e => {
-    e.preventDefault(); drop.classList.remove('dragging');
-  }));
+  ['dragenter','dragover'].forEach(evt => drop.addEventListener(evt, e => {e.preventDefault(); drop.classList.add('dragging');}));
+  ['dragleave','drop'].forEach(evt => drop.addEventListener(evt, e => {e.preventDefault(); drop.classList.remove('dragging');}));
   drop.addEventListener('drop', e => {
-    const files = e.dataTransfer.files;
-    if (!files || !files.length) return;
-    const dt = new DataTransfer(); dt.items.add(files[0]);
-    input.files = dt.files; showFile(files[0]);
+    const files = e.dataTransfer.files; if (!files || !files.length) return;
+    const dt = new DataTransfer(); dt.items.add(files[0]); input.files = dt.files; showFile(files[0]);
   });
-
   form.addEventListener('submit', e => {
-    if (!input.files.length) {
-      e.preventDefault();
-      drop.classList.add('bad-file');
-      title.textContent = '⚠️ Спочатку вибери YML або CSV';
-      status.textContent = 'Файл ще не додано.';
-      return;
-    }
-    submit.disabled = true;
-    submit.textContent = '⏳ Завантажуємо файл…';
+    if (!input.files.length || !input.files[0].name.toLowerCase().endsWith('.xlsx')) {e.preventDefault(); return;}
+    submit.disabled = true; submit.textContent = '⏳ Запускаємо PUMA…';
   });
 })();
 </script>
