@@ -64,7 +64,6 @@ def _type_conflict(source_text: str, offer_text: str) -> str | None:
     return f"product type mismatch: expected {sorted(a)}, got {sorted(b)}" if a and b and a.isdisjoint(b) else None
 
 def _accessory_conflict(source_text: str, offer_text: str) -> str | None:
-    """Reject accessory/part pages when the source mission is the complete device."""
     src, off = _norm(source_text), _norm(offer_text)
     accessory_patterns = {
         "case/accessory": r"\b(?:чохол|чехол|кейс|футляр|накладка|бампер)\b",
@@ -72,10 +71,16 @@ def _accessory_conflict(source_text: str, offer_text: str) -> str | None:
         "replacement display": r"\b(?:дисплей|екран|экран|тачскрин|сенсор)\b.*\b(?:рамк|модул|replacement|заміна|замена)\w*\b",
         "ear tips": r"\b(?:амбушюр|ear\s*tips?)\w*\b",
         "single earbud": r"\b(?:left|right|лівий|правий|левый|правый)\b.*\b(?:airpods|навушник|наушник)\w*\b|\b(?:airpods|навушник|наушник)\w*\b.*\b(?:left|right|лівий|правий|левый|правый)\b",
+        "charging case only": r"\b(?:airpods|навушник|наушник)\w*\b.*\bcase\b|\bcase\b.*\b(?:airpods|навушник|наушник)\w*\b",
+        "usb hub/adapter": r"\b(?:hub|хаб|розгалужувач|разветвитель|адаптер)\b",
     }
+    # A complete AirPods product legitimately contains 'MagSafe Case'; only reject case-only titles.
+    if "charging case only" in accessory_patterns:
+        case_only = bool(re.search(accessory_patterns["charging case only"], off, re.I)) and not bool(re.search(r"\b(?:with|з|с)\s+(?:magsafe\s+)?(?:charging\s+)?case\b", off, re.I))
+        if case_only and not re.search(accessory_patterns["charging case only"], src, re.I): return "accessory/part mismatch: charging case only"
     for label, pattern in accessory_patterns.items():
-        if re.search(pattern, off, re.I) and not re.search(pattern, src, re.I):
-            return f"accessory/part mismatch: {label}"
+        if label == "charging case only": continue
+        if re.search(pattern, off, re.I) and not re.search(pattern, src, re.I): return f"accessory/part mismatch: {label}"
     return None
 
 def _pack_count(text: str) -> int | None:
@@ -104,8 +109,9 @@ def _measurement_conflict(source_text: str, offer_text: str) -> str | None:
     return None
 
 def _storage_pairs(text: str) -> set[tuple[int,int]]:
-    norm=_norm(text); out=set()
-    for a,b in re.findall(r"\b(\d{1,2})\s*[/+]\s*(\d{2,4})\s*(?:gb|гб)?\b",norm,re.I): out.add((int(a),int(b)))
+    # Do not normalize punctuation first: slash/plus carries the RAM/storage relation.
+    raw=str(text or "").casefold(); out=set()
+    for a,b in re.findall(r"(?<!\d)(\d{1,2})\s*[/+]\s*(\d{2,4})\s*(?:gb|гб)?\b",raw,re.I): out.add((int(a),int(b)))
     return out
 
 def _storage_conflict(source_text: str, offer_text: str) -> str | None:
@@ -114,23 +120,28 @@ def _storage_conflict(source_text: str, offer_text: str) -> str | None:
     return None
 
 def _model_family_tokens(text: str) -> set[str]:
-    norm=_norm(text)
-    # Common human-facing families such as A55/A56, S24/S25, iPhone 15/16 plus mixed IDs.
-    return {x.casefold() for x in re.findall(r"\b(?:[a-z]{1,4}\d{2,4}[a-z0-9-]*|iphone\s*\d{1,2})\b",norm,re.I) if not re.fullmatch(r"20\d{2}",x)}
+    raw=str(text or "").casefold()
+    return {x.replace(" ","") for x in re.findall(r"\b(?:[a-z]{1,5}[- ]?\d{1,4}[a-z0-9-]*|iphone\s*\d{1,2})\b",raw,re.I) if not re.fullmatch(r"20\d{2}",x)}
 
-# Product-title variant facts: missing values are fine, but explicit disagreement is not.
+def _named_product_family(text: str) -> set[str]:
+    norm=_norm(text); out=set()
+    # Samsung Galaxy families: A55, Fold 4, Flip 6, S24, etc.
+    for m in re.finditer(r"\bgalaxy\s+(a\d{2,3}|s\d{1,3}|m\d{2,3}|f\d{2,3}|fold\s*\d+|flip\s*\d+)\b",norm,re.I): out.add("galaxy:"+re.sub(r"\s+","",m.group(1).casefold()))
+    # AirPods generations/families.
+    for m in re.finditer(r"\bairpods\s+(pro(?:\s*\d+)?|max|\d+(?:st|nd|rd|th)?(?:\s*generation)?)\b",norm,re.I): out.add("airpods:"+re.sub(r"\s+","",m.group(1).casefold()))
+    return out
+
 def _title_variant_conflict(source_text: str, offer_text: str) -> str | None:
     src, off = _norm(source_text), _norm(offer_text)
     src_years=set(re.findall(r"\b20\d{2}\b",src)); off_years=set(re.findall(r"\b20\d{2}\b",off))
     if src_years and off_years and src_years.isdisjoint(off_years): return f"variant year mismatch: expected {sorted(src_years)}, got {sorted(off_years)}"
-    hz=lambda t:set(re.findall(r"\b(\d{2,3})\s*(?:гц|hz)\b",t,re.I))
-    sh,oh=hz(src),hz(off)
+    hz=lambda t:set(re.findall(r"\b(\d{2,3})\s*(?:гц|hz)\b",t,re.I)); sh,oh=hz(src),hz(off)
     if sh and oh and sh.isdisjoint(oh): return f"refresh-rate mismatch: expected {sorted(sh)}, got {sorted(oh)}"
-    sf,of=_model_family_tokens(src),_model_family_tokens(off)
-    ignored={"hdr10","2k","4k","5g"}; sf-=ignored; of-=ignored
-    # If an offer states the expected family, extra technical IDs are harmless. Otherwise a competing family is a contradiction.
-    expected_human={x for x in sf if re.fullmatch(r"[a-z]{1,4}\d{2,4}",x)}
-    offered_human={x for x in of if re.fullmatch(r"[a-z]{1,4}\d{2,4}",x)}
+    named_src,named_off=_named_product_family(source_text),_named_product_family(offer_text)
+    if named_src and named_off and named_src.isdisjoint(named_off): return f"named product family mismatch: expected {sorted(named_src)}, got {sorted(named_off)}"
+    sf,of=_model_family_tokens(source_text),_model_family_tokens(offer_text); ignored={"hdr10","2k","4k","5g"}; sf-=ignored; of-=ignored
+    expected_human={x for x in sf if re.fullmatch(r"[a-z]{1,5}\d{1,4}",x)}; offered_human={x for x in of if re.fullmatch(r"[a-z]{1,5}\d{1,4}",x)}
+    # Compare human family only when the offer does not already contain the expected one.
     if expected_human and offered_human and expected_human.isdisjoint(offered_human): return f"product family mismatch: expected {sorted(expected_human)}, got {sorted(offered_human)}"
     return None
 
@@ -140,8 +151,7 @@ def validate_offer(mission: ProductMission, offer: Offer) -> ValidatedOffer:
     source_tokens,offer_tokens=_tokens(source_text),_tokens(offer_text); overlap=len(source_tokens&offer_tokens)/max(1,len(source_tokens))
     identifiers=extract_identifiers(mission); matched_ids=[i for i in identifiers if _strong_identifier(i) and _compact(i) and _compact(i) in _compact(offer_text)]
     expected_model=_explicit_model(mission); model_match=_model_match(expected_model,offer_text); expected_brand=_explicit_brand(mission); brand_match=_brand_match(expected_brand,offer_text)
-    strong_identity=bool(matched_ids or model_match)
-    brand_problem = None if (brand_match or strong_identity) else f"brand not confirmed: {expected_brand}"
+    strong_identity=bool(matched_ids or model_match); brand_problem=None if (brand_match or strong_identity) else f"brand not confirmed: {expected_brand}"
     problems=[_accessory_conflict(source_text,offer_text),_type_conflict(source_text,offer_text),_quantity_conflict(source_text,offer_text,strong_identity=strong_identity),_measurement_conflict(source_text,offer_text),_storage_conflict(source_text,offer_text),_title_variant_conflict(source_text,offer_text),brand_problem]
     conflicts=[p for p in problems if p]; positive=[]
     if matched_ids: positive.append("strong identifier match: "+", ".join(matched_ids[:4]))
@@ -154,11 +164,8 @@ def validate_offer(mission: ProductMission, offer: Offer) -> ValidatedOffer:
         if overlap>=.18: score=min(.64,.20+overlap); verdict=Verdict.CONFLICT; conflicts.append(f"expected model not confirmed: {expected_model}")
         else: score=overlap; verdict=Verdict.REJECT
     elif expected_model and not model_match and offer.marketplace == Marketplace.PROM:
-        if overlap>=.55:
-            score=min(.88,.42+overlap); verdict=Verdict.PASS
-            positive.append("Prom descriptive identity accepted; model absent")
-        elif overlap>=.18:
-            score=min(.64,.20+overlap); verdict=Verdict.CONFLICT; conflicts.append("insufficient Prom descriptive identity")
+        if overlap>=.55: score=min(.88,.42+overlap); verdict=Verdict.PASS; positive.append("Prom descriptive identity accepted; model absent")
+        elif overlap>=.18: score=min(.64,.20+overlap); verdict=Verdict.CONFLICT; conflicts.append("insufficient Prom descriptive identity")
         else: score=overlap; verdict=Verdict.REJECT
     elif strong_identity: score=min(1.0,.72+.05*len(matched_ids)+(.05 if model_match else 0)+.18*overlap); verdict=Verdict.PASS
     elif overlap>=.55: score=min(.79,.35+overlap); verdict=Verdict.PASS
