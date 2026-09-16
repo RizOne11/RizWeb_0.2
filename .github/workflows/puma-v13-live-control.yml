@@ -11,14 +11,32 @@ on:
 jobs:
   live-control:
     runs-on: ubuntu-latest
-    timeout-minutes: 7
+    timeout-minutes: 9
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - name: Control Xiaomi and assert Prom mirror dedup
+      - name: Diagnose Xiaomi source by source
+        run: |
+          python - <<'PY'
+          import asyncio,json,time
+          from puma_scouts.models import ProductMission
+          from puma_scouts.production import scan
+          m=ProductMission(article='SUPPLIER-SKU-LOCK-ONLY',source_data={'name':'Монітор 27 2K Xiaomi Redmi A27Q 2025 100 Гц IPS HDR10 чорний','brand':'Xiaomi','model':'P27QCB-RA'})
+          async def main():
+            out={}
+            for source in ['prom','epicentr','hotline','web_shops']:
+              t=time.monotonic()
+              try:
+                rows=await scan(m,[source]);out[source]={'seconds':round(time.monotonic()-t,2),'offers':len(rows),'rows':[{'price':r['price'],'title':r['found_title'],'url':r['url'],'match':r['match'],'health':r['health']} for r in rows]}
+              except Exception as e:out[source]={'seconds':round(time.monotonic()-t,2),'error':type(e).__name__+': '+str(e)}
+              print('PUMA_SOURCE_'+source.upper()+'='+json.dumps(out[source],ensure_ascii=False),flush=True)
+            return out
+          result=asyncio.run(main());print('PUMA_SOURCE_DIAGNOSTIC='+json.dumps(result,ensure_ascii=False))
+          PY
+      - name: Control Xiaomi aggregate and Prom dedup
         run: |
           python - <<'PY'
           import asyncio,json,time
@@ -27,32 +45,24 @@ jobs:
           from puma_scouts.production import scan
           m=ProductMission(article='SUPPLIER-SKU-LOCK-ONLY',source_data={'name':'Монітор 27 2K Xiaomi Redmi A27Q 2025 100 Гц IPS HDR10 чорний','brand':'Xiaomi','model':'P27QCB-RA'})
           t=time.monotonic();rows=asyncio.run(scan(m,['prom','epicentr','hotline','web_shops']));elapsed=round(time.monotonic()-t,2)
-          compact=[{'source':r['source'],'price':r['price'],'title':r['found_title'],'url':r['url'],'match':r['match']} for r in rows]
-          groups=Counter((r['source'],r['price']) for r in rows)
-          print('PUMA_LIVE_SECONDS='+str(elapsed));print('PUMA_LIVE_ROWS='+json.dumps(compact,ensure_ascii=False));print('PUMA_LIVE_PRICE_GROUPS='+json.dumps([{'source':s,'price':p,'cards':n} for (s,p),n in sorted(groups.items())],ensure_ascii=False));print('PUMA_LIVE_SOURCES='+','.join(sorted({r['source'] for r in rows})))
-          wrong=[r for r in rows if any(x in r['found_title'].casefold() for x in ['x27gq','type-c 2026','120 гц','165 гц'])]
-          print('PUMA_WRONG_VARIANTS='+json.dumps(wrong,ensure_ascii=False))
-          if not rows:raise SystemExit('NO_REAL_OFFERS_FOUND')
+          groups=Counter((r['source'],r['price']) for r in rows);print('PUMA_LIVE_SECONDS='+str(elapsed));print('PUMA_LIVE_ROWS='+json.dumps(rows,ensure_ascii=False));print('PUMA_LIVE_PRICE_GROUPS='+json.dumps([{'source':s,'price':p,'cards':n} for (s,p),n in sorted(groups.items())],ensure_ascii=False));print('PUMA_LIVE_SOURCES='+','.join(sorted({r['source'] for r in rows})))
+          wrong=[r for r in rows if any(x in r['found_title'].casefold() for x in ['x27gq','type-c 2026','120 гц','165 гц'])];print('PUMA_WRONG_VARIANTS='+json.dumps(wrong,ensure_ascii=False))
           if wrong:raise SystemExit('WRONG_VARIANTS_ACCEPTED')
-          # The known control currently has one independent Prom card at each accepted price; m/p mirrors must not double it.
           if any(n>1 for (s,p),n in groups.items() if s=='prom'):raise SystemExit('PROM_MIRROR_DUPLICATES_REMAIN')
+          if not rows:raise SystemExit('NO_REAL_OFFERS_FOUND')
           PY
       - name: Multi-product live smoke
+        if: success()
         run: |
           python - <<'PY'
           import asyncio,json,time
           from puma_scouts.models import ProductMission
           from puma_scouts.production import scan
-          missions=[
-            ProductMission(article='BATCH-1',source_data={'name':'Монітор Xiaomi Redmi A27Q 2025 27 2K 100 Гц','brand':'Xiaomi','model':'P27QCB-RA'}),
-            ProductMission(article='BATCH-2',source_data={'name':'Apple AirPods Pro 2 USB-C','brand':'Apple','model':'MTJV3'}),
-            ProductMission(article='BATCH-3',source_data={'name':'Samsung Galaxy A55 5G 8/256GB','brand':'Samsung','model':'SM-A556B'})]
+          missions=[ProductMission(article='BATCH-1',source_data={'name':'Монітор Xiaomi Redmi A27Q 2025 27 2K 100 Гц','brand':'Xiaomi','model':'P27QCB-RA'}),ProductMission(article='BATCH-2',source_data={'name':'Apple AirPods Pro 2 USB-C','brand':'Apple','model':'MTJV3'}),ProductMission(article='BATCH-3',source_data={'name':'Samsung Galaxy A55 5G 8/256GB','brand':'Samsung','model':'SM-A556B'})]
           async def one(m):
             t=time.monotonic();rows=await scan(m,['prom','epicentr','hotline','web_shops']);return {'article':m.article,'name':m.source_data['name'],'seconds':round(time.monotonic()-t,2),'offers':len(rows),'sources':sorted({r['source'] for r in rows}),'rows':[{'source':r['source'],'price':r['price'],'title':r['found_title'],'url':r['url'],'match':r['match']} for r in rows]}
-          started=time.monotonic();result=asyncio.run(asyncio.gather(*[one(m) for m in missions])) if False else None
           async def main():return await asyncio.gather(*[one(m) for m in missions])
-          result=asyncio.run(main());total=round(time.monotonic()-started,2)
-          print('PUMA_BATCH_SECONDS='+str(total));print('PUMA_BATCH_RESULTS='+json.dumps(result,ensure_ascii=False))
+          started=time.monotonic();result=asyncio.run(main());print('PUMA_BATCH_SECONDS='+str(round(time.monotonic()-started,2)));print('PUMA_BATCH_RESULTS='+json.dumps(result,ensure_ascii=False))
           if not result[0]['offers']:raise SystemExit('CONTROL_PRODUCT_LOST_IN_BATCH')
           if sum(x['offers'] for x in result)<2:raise SystemExit('BATCH_DISCOVERY_TOO_WEAK')
           PY
