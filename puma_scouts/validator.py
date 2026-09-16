@@ -74,14 +74,29 @@ def _accessory_conflict(source_text: str, offer_text: str) -> str | None:
         "charging case only": r"\b(?:airpods|навушник|наушник)\w*\b.*\bcase\b|\bcase\b.*\b(?:airpods|навушник|наушник)\w*\b",
         "usb hub/adapter": r"\b(?:hub|хаб|розгалужувач|разветвитель|адаптер)\b",
     }
-    # A complete AirPods product legitimately contains 'MagSafe Case'; only reject case-only titles.
-    if "charging case only" in accessory_patterns:
-        case_only = bool(re.search(accessory_patterns["charging case only"], off, re.I)) and not bool(re.search(r"\b(?:with|з|с)\s+(?:magsafe\s+)?(?:charging\s+)?case\b", off, re.I))
-        if case_only and not re.search(accessory_patterns["charging case only"], src, re.I): return "accessory/part mismatch: charging case only"
+    case_only = bool(re.search(accessory_patterns["charging case only"], off, re.I)) and not bool(re.search(r"\b(?:with|з|с)\s+(?:magsafe\s+)?(?:charging\s+)?case\b", off, re.I))
+    if case_only and not re.search(accessory_patterns["charging case only"], src, re.I): return "accessory/part mismatch: charging case only"
     for label, pattern in accessory_patterns.items():
         if label == "charging case only": continue
         if re.search(pattern, off, re.I) and not re.search(pattern, src, re.I): return f"accessory/part mismatch: {label}"
     return None
+
+
+def _condition_conflict(source_text: str, offer_text: str) -> str | None:
+    src, off = _norm(source_text), _norm(offer_text)
+    used = r"\b(?:вживан\w*|б\s*у|бу|used|refurbished|refurb|відновлен\w*|восстановлен\w*)\b"
+    if re.search(used, off, re.I) and not re.search(used, src, re.I): return "condition mismatch: used/refurbished offer"
+    return None
+
+
+def _authenticity_conflict(source_text: str, offer_text: str) -> str | None:
+    src, off = _norm(source_text), _norm(offer_text)
+    explicit_clone = r"\b(?:реплік\w*|реплик\w*|копі\w*|копи\w*|аналог\w*|clone|copy|airoha)\b"
+    # Only apply when the source mission identifies a branded original; never infer from price alone.
+    branded_original = bool(re.search(r"\b(?:apple|samsung|xiaomi|sony|bose|jbl)\b", src, re.I))
+    if branded_original and re.search(explicit_clone, off, re.I) and not re.search(explicit_clone, src, re.I): return "authenticity mismatch: explicit replica/clone marker"
+    return None
+
 
 def _pack_count(text: str) -> int | None:
     norm=_norm(text)
@@ -109,7 +124,6 @@ def _measurement_conflict(source_text: str, offer_text: str) -> str | None:
     return None
 
 def _storage_pairs(text: str) -> set[tuple[int,int]]:
-    # Do not normalize punctuation first: slash/plus carries the RAM/storage relation.
     raw=str(text or "").casefold(); out=set()
     for a,b in re.findall(r"(?<!\d)(\d{1,2})\s*[/+]\s*(\d{2,4})\s*(?:gb|гб)?\b",raw,re.I): out.add((int(a),int(b)))
     return out
@@ -125,9 +139,7 @@ def _model_family_tokens(text: str) -> set[str]:
 
 def _named_product_family(text: str) -> set[str]:
     norm=_norm(text); out=set()
-    # Samsung Galaxy families: A55, Fold 4, Flip 6, S24, etc.
     for m in re.finditer(r"\bgalaxy\s+(a\d{2,3}|s\d{1,3}|m\d{2,3}|f\d{2,3}|fold\s*\d+|flip\s*\d+)\b",norm,re.I): out.add("galaxy:"+re.sub(r"\s+","",m.group(1).casefold()))
-    # AirPods generations/families.
     for m in re.finditer(r"\bairpods\s+(pro(?:\s*\d+)?|max|\d+(?:st|nd|rd|th)?(?:\s*generation)?)\b",norm,re.I): out.add("airpods:"+re.sub(r"\s+","",m.group(1).casefold()))
     return out
 
@@ -141,7 +153,6 @@ def _title_variant_conflict(source_text: str, offer_text: str) -> str | None:
     if named_src and named_off and named_src.isdisjoint(named_off): return f"named product family mismatch: expected {sorted(named_src)}, got {sorted(named_off)}"
     sf,of=_model_family_tokens(source_text),_model_family_tokens(offer_text); ignored={"hdr10","2k","4k","5g"}; sf-=ignored; of-=ignored
     expected_human={x for x in sf if re.fullmatch(r"[a-z]{1,5}\d{1,4}",x)}; offered_human={x for x in of if re.fullmatch(r"[a-z]{1,5}\d{1,4}",x)}
-    # Compare human family only when the offer does not already contain the expected one.
     if expected_human and offered_human and expected_human.isdisjoint(offered_human): return f"product family mismatch: expected {sorted(expected_human)}, got {sorted(offered_human)}"
     return None
 
@@ -152,7 +163,7 @@ def validate_offer(mission: ProductMission, offer: Offer) -> ValidatedOffer:
     identifiers=extract_identifiers(mission); matched_ids=[i for i in identifiers if _strong_identifier(i) and _compact(i) and _compact(i) in _compact(offer_text)]
     expected_model=_explicit_model(mission); model_match=_model_match(expected_model,offer_text); expected_brand=_explicit_brand(mission); brand_match=_brand_match(expected_brand,offer_text)
     strong_identity=bool(matched_ids or model_match); brand_problem=None if (brand_match or strong_identity) else f"brand not confirmed: {expected_brand}"
-    problems=[_accessory_conflict(source_text,offer_text),_type_conflict(source_text,offer_text),_quantity_conflict(source_text,offer_text,strong_identity=strong_identity),_measurement_conflict(source_text,offer_text),_storage_conflict(source_text,offer_text),_title_variant_conflict(source_text,offer_text),brand_problem]
+    problems=[_authenticity_conflict(source_text,offer_text),_condition_conflict(source_text,offer_text),_accessory_conflict(source_text,offer_text),_type_conflict(source_text,offer_text),_quantity_conflict(source_text,offer_text,strong_identity=strong_identity),_measurement_conflict(source_text,offer_text),_storage_conflict(source_text,offer_text),_title_variant_conflict(source_text,offer_text),brand_problem]
     conflicts=[p for p in problems if p]; positive=[]
     if matched_ids: positive.append("strong identifier match: "+", ".join(matched_ids[:4]))
     if model_match: positive.append("explicit model match: "+str(expected_model))
