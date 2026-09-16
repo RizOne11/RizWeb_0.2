@@ -62,6 +62,22 @@ def _type_groups(text: str) -> set[str]:
 def _type_conflict(source_text: str, offer_text: str) -> str | None:
     a,b=_type_groups(source_text),_type_groups(offer_text)
     return f"product type mismatch: expected {sorted(a)}, got {sorted(b)}" if a and b and a.isdisjoint(b) else None
+
+def _accessory_conflict(source_text: str, offer_text: str) -> str | None:
+    """Reject accessory/part pages when the source mission is the complete device."""
+    src, off = _norm(source_text), _norm(offer_text)
+    accessory_patterns = {
+        "case/accessory": r"\b(?:чохол|чехол|кейс|футляр|накладка|бампер)\b",
+        "screen protector": r"\b(?:плівка|пленка|скло|стекло)\b.*\b(?:захис|защит|гідрогел|гидрогел)\w*\b|\b(?:захис|защит|гідрогел|гидрогел)\w*\b.*\b(?:плівка|пленка|скло|стекло)\b",
+        "replacement display": r"\b(?:дисплей|екран|экран|тачскрин|сенсор)\b.*\b(?:рамк|модул|replacement|заміна|замена)\w*\b",
+        "ear tips": r"\b(?:амбушюр|ear\s*tips?)\w*\b",
+        "single earbud": r"\b(?:left|right|лівий|правий|левый|правый)\b.*\b(?:airpods|навушник|наушник)\w*\b|\b(?:airpods|навушник|наушник)\w*\b.*\b(?:left|right|лівий|правий|левый|правый)\b",
+    }
+    for label, pattern in accessory_patterns.items():
+        if re.search(pattern, off, re.I) and not re.search(pattern, src, re.I):
+            return f"accessory/part mismatch: {label}"
+    return None
+
 def _pack_count(text: str) -> int | None:
     norm=_norm(text)
     for pattern in (r"\b(\d{1,3})\s*(?:шт|штук|pcs|pieces)\b",r"\b(?:набор|комплект|упаковка)\s+(?:из\s+)?(\d{1,3})\b"):
@@ -75,6 +91,7 @@ def _quantity_conflict(source_text: str, offer_text: str, *, strong_identity: bo
     if actual is not None and actual != expected: return f"pack quantity mismatch: expected {expected}, got {actual}"
     if actual is None and not strong_identity: return f"pack quantity not confirmed: expected {expected}"
     return None
+
 def _key_measurements(text: str) -> set[tuple[str,str]]:
     norm=_norm(text); aliases={"г":"g","гр":"g","g":"g","кг":"kg","kg":"kg","вт":"w","w":"w","мм":"mm","mm":"mm","мл":"ml","ml":"ml"}; out=set()
     for value,unit in re.findall(r"\b(\d+(?:[.,]\d+)?)\s*(кг|kg|гр|г|g|вт|w|мм|mm|мл|ml)\b",norm,re.I): out.add((value.replace(",","."),aliases[unit.casefold()]))
@@ -86,6 +103,21 @@ def _measurement_conflict(source_text: str, offer_text: str) -> str | None:
         if vals and value not in vals: return f"numeric spec mismatch: expected {value}{unit}, got {sorted(vals)}"
     return None
 
+def _storage_pairs(text: str) -> set[tuple[int,int]]:
+    norm=_norm(text); out=set()
+    for a,b in re.findall(r"\b(\d{1,2})\s*[/+]\s*(\d{2,4})\s*(?:gb|гб)?\b",norm,re.I): out.add((int(a),int(b)))
+    return out
+
+def _storage_conflict(source_text: str, offer_text: str) -> str | None:
+    expected,actual=_storage_pairs(source_text),_storage_pairs(offer_text)
+    if expected and actual and expected.isdisjoint(actual): return f"memory/storage mismatch: expected {sorted(expected)}, got {sorted(actual)}"
+    return None
+
+def _model_family_tokens(text: str) -> set[str]:
+    norm=_norm(text)
+    # Common human-facing families such as A55/A56, S24/S25, iPhone 15/16 plus mixed IDs.
+    return {x.casefold() for x in re.findall(r"\b(?:[a-z]{1,4}\d{2,4}[a-z0-9-]*|iphone\s*\d{1,2})\b",norm,re.I) if not re.fullmatch(r"20\d{2}",x)}
+
 # Product-title variant facts: missing values are fine, but explicit disagreement is not.
 def _title_variant_conflict(source_text: str, offer_text: str) -> str | None:
     src, off = _norm(source_text), _norm(offer_text)
@@ -94,15 +126,12 @@ def _title_variant_conflict(source_text: str, offer_text: str) -> str | None:
     hz=lambda t:set(re.findall(r"\b(\d{2,3})\s*(?:гц|hz)\b",t,re.I))
     sh,oh=hz(src),hz(off)
     if sh and oh and sh.isdisjoint(oh): return f"refresh-rate mismatch: expected {sorted(sh)}, got {sorted(oh)}"
-    # Explicit family/model names like A27Q vs X27GQ are strong contradictions.
-    fam=lambda t:{x.casefold() for x in re.findall(r"\b(?=[a-z0-9-]{4,12}\b)(?=[a-z0-9-]*[a-z])(?=[a-z0-9-]*\d)[a-z0-9-]+\b",t,re.I) if not re.fullmatch(r"20\d{2}",x)}
-    sf,of=fam(src),fam(off)
-    source_core={x for x in sf if x not in {"hdr10"}}
-    offer_core={x for x in of if x not in {"hdr10"}}
-    # Only reject when the source's recognizable family token is absent and the offer exposes a competing family token.
-    expected_families={x for x in source_core if re.fullmatch(r"[a-z]+\d+[a-z0-9-]*",x)}
-    offered_families={x for x in offer_core if re.fullmatch(r"[a-z]+\d+[a-z0-9-]*",x)}
-    if expected_families and offered_families and expected_families.isdisjoint(offered_families): return f"product family mismatch: expected {sorted(expected_families)}, got {sorted(offered_families)}"
+    sf,of=_model_family_tokens(src),_model_family_tokens(off)
+    ignored={"hdr10","2k","4k","5g"}; sf-=ignored; of-=ignored
+    # If an offer states the expected family, extra technical IDs are harmless. Otherwise a competing family is a contradiction.
+    expected_human={x for x in sf if re.fullmatch(r"[a-z]{1,4}\d{2,4}",x)}
+    offered_human={x for x in of if re.fullmatch(r"[a-z]{1,4}\d{2,4}",x)}
+    if expected_human and offered_human and expected_human.isdisjoint(offered_human): return f"product family mismatch: expected {sorted(expected_human)}, got {sorted(offered_human)}"
     return None
 
 
@@ -113,7 +142,7 @@ def validate_offer(mission: ProductMission, offer: Offer) -> ValidatedOffer:
     expected_model=_explicit_model(mission); model_match=_model_match(expected_model,offer_text); expected_brand=_explicit_brand(mission); brand_match=_brand_match(expected_brand,offer_text)
     strong_identity=bool(matched_ids or model_match)
     brand_problem = None if (brand_match or strong_identity) else f"brand not confirmed: {expected_brand}"
-    problems=[_type_conflict(source_text,offer_text),_quantity_conflict(source_text,offer_text,strong_identity=strong_identity),_measurement_conflict(source_text,offer_text),_title_variant_conflict(source_text,offer_text),brand_problem]
+    problems=[_accessory_conflict(source_text,offer_text),_type_conflict(source_text,offer_text),_quantity_conflict(source_text,offer_text,strong_identity=strong_identity),_measurement_conflict(source_text,offer_text),_storage_conflict(source_text,offer_text),_title_variant_conflict(source_text,offer_text),brand_problem]
     conflicts=[p for p in problems if p]; positive=[]
     if matched_ids: positive.append("strong identifier match: "+", ".join(matched_ids[:4]))
     if model_match: positive.append("explicit model match: "+str(expected_model))
