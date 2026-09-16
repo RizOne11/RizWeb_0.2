@@ -2,12 +2,16 @@ name: PUMA v1.3 Live Control
 on:
   push:
     branches: [puma-v1.3-integration]
-    paths: [.github/workflows/puma-v13-live-control.yml]
+    paths:
+      - .github/workflows/puma-v13-live-control.yml
+      - puma_scouts/production.py
+      - puma_scouts/validator.py
+      - puma_scouts/scouts/**
   workflow_dispatch:
 jobs:
   live-xiaomi:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 4
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -17,19 +21,26 @@ jobs:
       - name: Scan control Xiaomi with production stack
         run: |
           python - <<'PY'
-          import asyncio, json
+          import asyncio, json, time
           from collections import Counter
           from puma_scouts.models import ProductMission
           from puma_scouts.production import scan
           mission=ProductMission(article='SUPPLIER-SKU-LOCK-ONLY',source_data={'name':'Монітор 27 2K Xiaomi Redmi A27Q 2025 100 Гц IPS HDR10 чорний','brand':'Xiaomi','model':'P27QCB-RA'})
+          started=time.monotonic()
           rows=asyncio.run(scan(mission,['prom','epicentr','hotline','web_shops']))
+          elapsed=round(time.monotonic()-started,2)
           compact=[{'source':r['source'],'price':r['price'],'title':r['found_title'],'url':r['url'],'match':r['match'],'domain':r['domain']} for r in rows]
+          print('PUMA_LIVE_SECONDS='+str(elapsed))
           print('PUMA_LIVE_ROWS='+json.dumps(compact,ensure_ascii=False))
           groups=Counter((r['source'],r['price']) for r in rows)
           print('PUMA_LIVE_PRICE_GROUPS='+json.dumps([{'source':s,'price':p,'cards':n} for (s,p),n in sorted(groups.items())],ensure_ascii=False))
           print('PUMA_LIVE_SOURCES='+','.join(sorted({r['source'] for r in rows})))
+          wrong=[r for r in rows if any(x in r['found_title'].casefold() for x in ['x27gq','type-c 2026','120 гц','165 гц'])]
+          print('PUMA_WRONG_VARIANTS='+json.dumps(wrong,ensure_ascii=False))
           if not rows:
               raise SystemExit('NO_REAL_OFFERS_FOUND')
+          if wrong:
+              raise SystemExit('WRONG_VARIANTS_ACCEPTED')
           if not all(r['url'].startswith('http') and r['price'] for r in rows):
               raise SystemExit('INVALID_REAL_OFFER')
           PY
