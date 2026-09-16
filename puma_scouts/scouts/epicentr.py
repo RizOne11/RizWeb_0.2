@@ -35,7 +35,19 @@ def _jsonld_products(html:str)->list[dict[str,Any]]:
 def _meta(html:str,key:str)->str|None:
     soup=BeautifulSoup(html,"html.parser");tag=soup.find("meta",attrs={"property":key}) or soup.find("meta",attrs={"name":key});return _clean(tag.get("content")) if tag and tag.get("content") else None
 def _extract_embedded_price(html:str)->Decimal|None:
-    for pattern in (r'"(?:price|currentPrice|finalPrice|priceValue|productPrice)"\s*:\s*(?:"|\{[^{}]{0,100}?"value"\s*:\s*")?([0-9][0-9\s.,]{1,15})',r'(?:data-price|itemprop=["\']price["\'])[^>]{0,120}?(?:content|value)?\s*=\s*["\']([0-9][0-9\s.,]{1,15})',r'([0-9][0-9\s]{2,10})\s*(?:₴|грн)'):
+    soup=BeautifulSoup(html,"html.parser")
+    # Prefer machine-readable current-price attributes before broad text fallbacks.
+    for tag in soup.select('[itemprop="price"], [data-price], meta[property="product:price:amount"], meta[property="og:price:amount"]'):
+        for attr in ("content","value","data-price"):
+            p=_decimal_price(tag.get(attr))
+            if p and p>=10:return p
+    patterns=(
+        r'"(?:price|currentPrice|finalPrice|priceValue|productPrice|salePrice|actualPrice)"\s*:\s*(?:"|\{[^{}]{0,160}?"(?:value|amount)"\s*:\s*")?([0-9][0-9\s.,]{1,15})',
+        r'(?:data-price|itemprop=["\']price["\'])[^>]{0,160}?(?:content|value|data-price)?\s*=\s*["\']([0-9][0-9\s.,]{1,15})',
+        r'(?:Ціна|Цена)\s*:?\s*(?:</?[^>]+>\s*){0,6}([0-9][0-9\s]{2,10})\s*(?:₴|грн)',
+        r'([0-9][0-9\s]{2,10})\s*(?:₴|грн)(?:\s*/\s*(?:шт\.?|од\.?))?'
+    )
+    for pattern in patterns:
         for m in re.finditer(pattern,html,flags=re.I|re.S):
             p=_decimal_price(m.group(1))
             if p and p>=10:return p
