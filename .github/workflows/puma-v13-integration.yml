@@ -1,0 +1,30 @@
+name: PUMA v1.3 Integration
+on:
+  push:
+    branches: [puma-v1.3-integration]
+  workflow_dispatch:
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Import production web app
+        run: python -c "import app; from puma_scouts.production import read_missions, save, run_sync; print('PUMA_V13_IMPORT_OK')"
+      - name: XLSX reader and report smoke
+        run: |
+          python - <<'PY'
+          from openpyxl import Workbook, load_workbook
+          from puma_scouts.production import read_missions, save
+          wb=Workbook(); ws=wb.active; ws.append(['Артикул','Назва','Бренд','Модель']); ws.append(['SUP-001','Монітор 27 2K Xiaomi Redmi A27Q 2025','Xiaomi','P27QCB-RA']); wb.save('/tmp/in.xlsx')
+          m=read_missions('/tmp/in.xlsx')
+          assert len(m)==1 and m[0].article=='SUP-001'
+          save([{'article':'SUP-001','name':m[0].source_data['name'],'brand':'Xiaomi','model':'P27QCB-RA','source':'prom','price':9998.0,'currency':'UAH','availability':'','found_title':'Xiaomi Redmi A27Q','url':'https://prom.ua/p/test','match':.88,'domain':'prom.ua','health':'FOUND'}],'/tmp/out.xlsx')
+          out=load_workbook('/tmp/out.xlsx',data_only=True)
+          assert {'Offers','Price summary'} <= set(out.sheetnames)
+          assert out['Price summary']['E2'].value==1
+          print('PUMA_V13_XLSX_OK')
+          PY
