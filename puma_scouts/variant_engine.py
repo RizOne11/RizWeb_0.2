@@ -42,7 +42,7 @@ _PART_PATTERNS = {
 }
 
 _COLOR_WORDS = {"black","white","blue","green","red","yellow","violet","purple","pink","gold","silver","gray","grey","orange","brown","чорний","чорна","білий","біла","синій","синя","блакитний","блакитна","зелений","зелена","червоний","червона","жовтий","жовта","фіолетовий","фіолетова","рожевий","рожева","золотий","срібний","сірий","черный","черная","белый","белая","синий","синяя","голубой","голубая","зеленый","зеленая","красный","красная","желтый","желтая","фиолетовый","фиолетовая","розовый","розовая","золотой","серебристый","серый"}
-_STOP = {"смартфон","smartphone","монітор","монитор","monitor","навушники","наушники","headphones","earbuds","телевізор","телевизор","ноутбук","laptop","планшет","tablet","apple","samsung","xiaomi","redmi","pro","plus","max","gen","generation","with","case","black","white","чорний","черный","білий","белый","gb","гб","5g","2k","ips","hdr10","usb","type","charging","magsafe"}
+_STOP = {"смартфон","smartphone","монітор","монитор","monitor","навушники","наушники","headphones","earbuds","телевізор","телевизор","ноутбук","laptop","планшет","tablet","apple","samsung","xiaomi","redmi","galaxy","pro","plus","max","gen","generation","with","case","black","white","чорний","черный","білий","белый","gb","гб","5g","lte","2k","4k","ips","hdr10","usb","type","charging","magsafe"}
 
 
 def entity_type(text: str) -> str | None:
@@ -71,10 +71,14 @@ def _sizes(text:str)->set[str]:
 
 
 def _core_tokens(text:str)->set[str]:
-    out=set()
-    for token in norm(text).split():
+    """Extract product-family/model-like tokens, excluding variant memory/network/display noise."""
+    raw=norm(text);out=set()
+    # First capture compact model-family tokens such as A55, S23, A27Q, X27GQ, MTJV3.
+    for token in raw.split():
         c=re.sub(r"[^a-zа-яіїє0-9]","",token,re.I)
         if not c or c in _STOP or c in _COLOR_WORDS:continue
+        # Memory expressions are variants, never product core (8/256GB -> 8256gb after compaction).
+        if re.fullmatch(r"\d{1,2}\d{2,4}(?:gb|гб)?",c,re.I):continue
         if re.fullmatch(r"20\d{2}",c) or re.fullmatch(r"\d+(?:hz|гц)?",c):continue
         if re.search(r"[a-zа-яіїє]",c,re.I) and re.search(r"\d",c):out.add(c)
     return out
@@ -85,17 +89,23 @@ def signature(text:str)->ProductSignature:
     return ProductSignature(entity=entity_type(text),core_tokens=frozenset(_core_tokens(text)),storage_gb=frozenset(storage),ram_gb=frozenset(ram),sizes=frozenset(_sizes(text)),colors=frozenset(set(norm(text).split())&_COLOR_WORDS))
 
 
+def _short_family(tokens:frozenset[str])->set[str]:
+    # Short alpha+numeric family names are highly discriminative across consumer products:
+    # A55 vs A17, S23 vs A55, A27Q vs X27GQ. Long MPNs may legitimately differ by color/region.
+    return {t for t in tokens if len(t)<=8 and re.search(r"[a-zа-яіїє]",t,re.I) and re.search(r"\d",t)}
+
+
 def identity_conflicts(expected_text:str,candidate_text:str)->list[str]:
     expected,candidate=signature(expected_text),signature(candidate_text);out=[]
     part_entities={"spare_part","accessory","component"}
-    # A mission that is not itself explicitly a part/accessory represents the whole product.
-    # Therefore a candidate explicitly declaring itself as a part/accessory/component is a contradiction
-    # even when the mission omits the generic entity word (e.g. "Samsung Galaxy A55 8/256").
     if candidate.entity in part_entities and expected.entity not in part_entities:
         out.append(f"whole-product mismatch: candidate is {candidate.entity}")
     elif expected.entity and candidate.entity and expected.entity!=candidate.entity:
         out.append(f"entity mismatch: expected {expected.entity}, got {candidate.entity}")
-    if expected.core_tokens and candidate.core_tokens and expected.core_tokens.isdisjoint(candidate.core_tokens):
+    ef,cf=_short_family(expected.core_tokens),_short_family(candidate.core_tokens)
+    if ef and cf and ef.isdisjoint(cf):
+        out.append(f"product family mismatch: expected {sorted(ef)}, got {sorted(cf)}")
+    elif expected.core_tokens and candidate.core_tokens and expected.core_tokens.isdisjoint(candidate.core_tokens):
         out.append(f"product core mismatch: expected {sorted(expected.core_tokens)}, got {sorted(candidate.core_tokens)}")
     return out
 
