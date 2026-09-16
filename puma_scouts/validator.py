@@ -130,9 +130,18 @@ def _storage_pairs(text: str) -> set[tuple[int,int]]:
     for a,b in re.findall(r"(?<!\d)(\d{1,2})\s*[/+]\s*(\d{2,4})\s*(?:gb|гб)?\b",raw,re.I): out.add((int(a),int(b)))
     return out
 
+def _storage_capacities(text: str) -> set[int]:
+    raw=str(text or "").casefold(); out=set()
+    for value, unit in re.findall(r"(?<!\d)(\d{2,4})\s*(gb|гб|tb|тб)\b", raw, re.I):
+        amount=int(value); out.add(amount*1024 if unit.casefold() in {"tb","тб"} else amount)
+    for _,storage in _storage_pairs(raw): out.add(storage)
+    return {x for x in out if x >= 32}
+
 def _storage_conflict(source_text: str, offer_text: str) -> str | None:
-    expected,actual=_storage_pairs(source_text),_storage_pairs(offer_text)
-    if expected and actual and expected.isdisjoint(actual): return f"memory/storage mismatch: expected {sorted(expected)}, got {sorted(actual)}"
+    expected_pairs,actual_pairs=_storage_pairs(source_text),_storage_pairs(offer_text)
+    if expected_pairs and actual_pairs and expected_pairs.isdisjoint(actual_pairs): return f"memory/storage mismatch: expected {sorted(expected_pairs)}, got {sorted(actual_pairs)}"
+    expected_caps,actual_caps=_storage_capacities(source_text),_storage_capacities(offer_text)
+    if expected_caps and actual_caps and expected_caps.isdisjoint(actual_caps): return f"storage capacity mismatch: expected {sorted(expected_caps)}GB, got {sorted(actual_caps)}GB"
     return None
 
 def _model_family_tokens(text: str) -> set[str]:
