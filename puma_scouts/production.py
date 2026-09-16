@@ -21,25 +21,39 @@ def read_missions(path:str,limit:int|None=None)->list[ProductMission]:
         source={k:data[k] for k in ("name","brand","model") if data[k]}; out.append(ProductMission(article=data["article"] or f"ROW-{r}",source_data=source))
         if limit and len(out)>=limit:break
     return out
+
 def scouts(selected:list[str]|None=None):
     from .scouts.catalog import HotlineScout,PromScout
     from .scouts.epicentr import EpicentrScout
     from .scouts.web_shops import WebShopsScout
-    all_scouts={"epicentr":EpicentrScout(timeout=15,max_candidates_per_query=12),"prom":PromScout(timeout=15,max_candidates_per_query=12),"hotline":HotlineScout(timeout=15,max_candidates_per_query=12),"web_shops":WebShopsScout(timeout=15,max_candidates_per_query=20,max_per_domain=2)}
+    # Shorter request timeouts for the web app. Each source also gets a hard wall-clock budget below.
+    all_scouts={"epicentr":EpicentrScout(timeout=8,max_candidates_per_query=10),"prom":PromScout(timeout=8,max_candidates_per_query=10),"hotline":HotlineScout(timeout=8,max_candidates_per_query=10),"web_shops":WebShopsScout(timeout=8,max_candidates_per_query=12,max_per_domain=2)}
     wanted=set(selected or all_scouts);return [s for k,s in all_scouts.items() if k in wanted]
+
+async def _scan_source(scout,mission:ProductMission,wall_timeout:float=75.0):
+    try:
+        return scout,await asyncio.wait_for(scout.scan(mission),timeout=wall_timeout)
+    except asyncio.TimeoutError:
+        return scout,None
+    except Exception:
+        # One marketplace must never kill the whole product scan.
+        return scout,None
+
 async def scan(mission:ProductMission,selected:list[str]|None=None)->list[dict[str,Any]]:
     rows=[]
-    for scout in scouts(selected):
-        report=await scout.scan(mission)
+    # Marketplaces are independent I/O jobs: run them concurrently instead of waiting source-by-source.
+    results=await asyncio.gather(*[_scan_source(s,mission) for s in scouts(selected)])
+    for scout,report in results:
+        if report is None:continue
         for item in report.offers:
             if item.verdict!=Verdict.PASS:continue
             o=item.offer; rows.append({"article":mission.article,"name":mission.source_data.get("name",""),"brand":mission.source_data.get("brand",""),"model":mission.source_data.get("model",""),"source":scout.marketplace.value,"price":float(o.price) if o.price is not None else None,"currency":o.currency,"availability":o.availability or "","found_title":o.title,"url":str(o.url),"match":round(item.score,3),"domain":o.attributes.get("source_domain","") or str(o.url).split('/')[2],"health":report.health.value})
-    # Collapse localized/mirrored independent-shop cards: same domain + price + same physical mission.
     dedup={}
     for x in rows:
         key=(x["article"],x["source"],x["domain"],x["price"]) if x["source"]=="web_shops" else (x["article"],x["source"],x["url"])
         dedup.setdefault(key,x)
     return list(dedup.values())
+
 def save(rows:list[dict[str,Any]],output:str)->None:
     wb=Workbook();ws=wb.active;ws.title="Offers";ws.append(["Артикул","Назва","Бренд","Модель","Джерело","Ціна","Валюта","Наявність","Знайдена назва","URL","Match","Домен","Health"])
     for x in rows:ws.append([x[k] for k in ("article","name","brand","model","source","price","currency","availability","found_title","url","match","domain","health")])
@@ -47,12 +61,26 @@ def save(rows:list[dict[str,Any]],output:str)->None:
     summary=wb.create_sheet("Price summary");summary.append(["Артикул","Назва","Джерело","Ціна","Карток"]);groups=Counter((x["article"],x["name"],x["source"],x["price"]) for x in rows if x["price"] is not None)
     for key,count in sorted(groups.items(),key=lambda z:(z[0][0],z[0][2],z[0][3])):summary.append([*key,count])
     summary.freeze_panes="A2";summary.auto_filter.ref=summary.dimensions;wb.save(output)
+
 async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[str]|None=None,progress_cb:Callable|None=None)->dict[str,Any]:
     missions=read_missions(input_path,limit);rows=[]
     if not missions:raise ValueError("У Excel не знайдено товарів")
-    for i,m in enumerate(missions,1):
-        if progress_cb:progress_cb(i-1,len(missions),m.source_data.get("name",m.article),"Шукаємо реальні пропозиції…")
-        rows.extend(await scan(m,selected))
+    # Small bounded product batches: enough concurrency to scale, without hammering marketplaces.
+    product_concurrency=4
+    semaphore=asyncio.Semaphore(product_concurrency)
+    completed=0
+    lock=asyncio.Lock()
+    async def one(m):
+        nonlocal completed
+        async with semaphore:
+            if progress_cb:progress_cb(completed,len(missions),m.source_data.get("name",m.article),"Шукаємо реальні пропозиції…")
+            found=await scan(m,selected)
+            async with lock:
+                completed+=1
+                if progress_cb:progress_cb(completed,len(missions),m.source_data.get("name",m.article),"Товар перевірено")
+            return found
+    batches=await asyncio.gather(*[one(m) for m in missions])
+    for found in batches:rows.extend(found)
     save(rows,output_path)
     if progress_cb:progress_cb(len(missions),len(missions),"Готово","Формуємо звіт…")
     return {"products":len(missions),"offers":len(rows),"sources":len({x['source'] for x in rows})}
