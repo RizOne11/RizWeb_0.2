@@ -35,14 +35,13 @@ _ENTITY_PATTERNS = {
     "perfume": r"\b(?:парфум|парфюм|туалетн\w+ вод|eau de|perfume)\b",
 }
 
-# Semantic classes, deliberately brand/model agnostic.
 _PART_PATTERNS = {
     "spare_part": r"\b(?:шлейф|flex cable|запчаст\w*|spare part|дисплей\w*|display(?: module)?|екран\w*|экран\w*|screen module|тачскрин\w*|touchscreen|сенсор\w*|матриц[аы]|акумулятор\w*|аккумулятор\w*|battery|материнск\w+ плат\w*|motherboard|задн\w+ кришк\w*|задн\w+ крышк\w*)\b",
     "accessory": r"\b(?:чохол\w*|чехол\w*|бампер\w*|захисн\w+ скло|защитн\w+ стекло|захисн\w+ плівк\w*|защитн\w+ пленк\w*|гідрогел\w*|гидрогел\w*|ремінець\w*|ремешок\w*|адаптер\w*|перехідник\w*|переходник\w*|usb hub|хаб)\b",
+    "component": r"\b(?:лів(?:ий|а)|прав(?:ий|а)|лев(?:ый|ая)|прав(?:ый|ая)|left|right)\s+(?:навушник\w*|наушник\w*|earbud\w*)\b|\b(?:no[- ]?box|без\s+(?:кейса|футляра|зарядн\w+ кейса))\b",
 }
 
 _COLOR_WORDS = {"black","white","blue","green","red","yellow","violet","purple","pink","gold","silver","gray","grey","orange","brown","чорний","чорна","білий","біла","синій","синя","блакитний","блакитна","зелений","зелена","червоний","червона","жовтий","жовта","фіолетовий","фіолетова","рожевий","рожева","золотий","срібний","сірий","черный","черная","белый","белая","синий","синяя","голубой","голубая","зеленый","зеленая","красный","красная","желтый","желтая","фиолетовый","фиолетовая","розовый","розовая","золотой","серебристый","серый"}
-
 _STOP = {"смартфон","smartphone","монітор","монитор","monitor","навушники","наушники","headphones","earbuds","телевізор","телевизор","ноутбук","laptop","планшет","tablet","apple","samsung","xiaomi","redmi","pro","plus","max","gen","generation","with","case","black","white","чорний","черный","білий","белый","gb","гб","5g","2k","ips","hdr10","usb","type","charging","magsafe"}
 
 
@@ -72,14 +71,11 @@ def _sizes(text:str)->set[str]:
 
 
 def _core_tokens(text:str)->set[str]:
-    # Core = discriminating family/model-like tokens from the human product name.
-    # No brand catalogue or product-specific rule table is used.
     out=set()
     for token in norm(text).split():
         c=re.sub(r"[^a-zа-яіїє0-9]","",token,re.I)
         if not c or c in _STOP or c in _COLOR_WORDS:continue
         if re.fullmatch(r"20\d{2}",c) or re.fullmatch(r"\d+(?:hz|гц)?",c):continue
-        # Mixed alpha-numeric family tokens (A55, A27Q) are strongest generic core evidence.
         if re.search(r"[a-zа-яіїє]",c,re.I) and re.search(r"\d",c):out.add(c)
     return out
 
@@ -91,10 +87,14 @@ def signature(text:str)->ProductSignature:
 
 def identity_conflicts(expected_text:str,candidate_text:str)->list[str]:
     expected,candidate=signature(expected_text),signature(candidate_text);out=[]
-    if expected.entity and candidate.entity and expected.entity!=candidate.entity:
+    part_entities={"spare_part","accessory","component"}
+    # A mission that is not itself explicitly a part/accessory represents the whole product.
+    # Therefore a candidate explicitly declaring itself as a part/accessory/component is a contradiction
+    # even when the mission omits the generic entity word (e.g. "Samsung Galaxy A55 8/256").
+    if candidate.entity in part_entities and expected.entity not in part_entities:
+        out.append(f"whole-product mismatch: candidate is {candidate.entity}")
+    elif expected.entity and candidate.entity and expected.entity!=candidate.entity:
         out.append(f"entity mismatch: expected {expected.entity}, got {candidate.entity}")
-    # If both sides explicitly expose family/model-like core tokens, different cores contradict.
-    # Missing candidate core remains unknown, not false.
     if expected.core_tokens and candidate.core_tokens and expected.core_tokens.isdisjoint(candidate.core_tokens):
         out.append(f"product core mismatch: expected {sorted(expected.core_tokens)}, got {sorted(candidate.core_tokens)}")
     return out
