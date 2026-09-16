@@ -17,7 +17,7 @@ from puma_scouts.production import run_sync
 BASE = Path(__file__).resolve().parent
 JOBS_DIR = BASE / "data" / "jobs"
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
-ALLOWED_ANALYSIS_EXTENSIONS = {"xlsx"}
+ALLOWED_ANALYSIS_EXTENSIONS = {"xlsx","csv","yml","xml"}
 ALLOWED_CONTENT_EXTENSIONS = {"csv", "yml", "xml"}
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "120"))
 
@@ -75,7 +75,7 @@ def worker(job_id,input_path,limit,selected_markets,supplier):
     d=JOBS_DIR/job_id; xlsx=d/"PUMA_doPUMAgatel_market_report.xlsx"
     def progress(current,total,name,extra=None):set_job(job_id,status="running",current=current,total=total,percent=round(current/max(1,total)*100,1),current_product=name,message=extra or "Аналізуємо ринок…")
     try:
-        set_job(job_id,status="running",message="Читаємо Excel…",started_at=time.time())
+        set_job(job_id,status="running",message="Читаємо каталог…",started_at=time.time())
         summary=run_sync(str(input_path),str(xlsx),limit=limit,selected=selected_markets,progress_cb=progress)
         set_job(job_id,status="done",percent=100,message="Готово",finished_at=time.time(),summary=summary,xlsx_file=str(xlsx),resume_available=False)
     except Exception as e:set_job(job_id,status="error",message=f"{type(e).__name__}: {e}",finished_at=time.time(),resume_available=False)
@@ -113,8 +113,8 @@ def content_preview():
 @app.post("/analyze")
 def analyze():
     f=request.files.get("catalog")
-    if not f or not f.filename:return render_template("error.html",message="Не вибрано Excel-файл."),400
-    if not allowed_file(f.filename,ALLOWED_ANALYSIS_EXTENSIONS):return render_template("error.html",message="доПУМАгатель v1.3 приймає Excel .xlsx"),400
+    if not f or not f.filename:return render_template("error.html",message="Не вибрано файл каталогу."),400
+    if not allowed_file(f.filename,ALLOWED_ANALYSIS_EXTENSIONS):return render_template("error.html",message="доПУМАгатель v1.3 приймає XLSX, CSV, YML та XML."),400
     supplier=(request.form.get("supplier") or Path(f.filename).stem or "Не вказано").strip();
     try:limit=int((request.form.get("limit") or "30").strip())
     except ValueError:limit=30
@@ -142,9 +142,9 @@ def download_xlsx(job_id):
     if not p.exists():abort(404)
     return send_file(p,as_attachment=True,download_name="PUMA_doPUMAgatel_market_report.xlsx")
 @app.post("/api/jobs/<job_id>/cancel")
-def cancel_job(job_id):return jsonify({"ok":False,"message":"Production v1.3 runs one product at a time; cancel will return in the next build."}),409
+def cancel_job(job_id):return jsonify({"ok":False,"message":"Production v1.3 runs bounded parallel products; cancel will return in the next build."}),409
 @app.post("/api/jobs/<job_id>/resume")
-def resume_job(job_id):return jsonify({"ok":False,"message":"Production v1.3: restart the analysis with the same Excel."}),409
+def resume_job(job_id):return jsonify({"ok":False,"message":"Production v1.3: restart the analysis with the same catalog file."}),409
 @app.errorhandler(413)
 def too_large(_):return render_template("error.html",message=f"Файл завеликий. Ліміт сервера: {MAX_UPLOAD_MB} МБ."),413
 if __name__=="__main__":app.run(host="0.0.0.0",port=int(os.getenv("PORT","8080")),debug=False)
