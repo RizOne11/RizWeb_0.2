@@ -1,6 +1,7 @@
 import asyncio
 
 from puma_scouts.models import IdentityConfidence, Marketplace, Offer, ProductMission, Verdict
+from puma_scouts.query import generate_queries as build_queries
 from puma_scouts.scouts.catalog import PromScout
 from puma_scouts.validator import validate_offer
 from puma_scouts.variant_engine import named_generations
@@ -22,7 +23,7 @@ def _offer(mission, title, *, sku=None, marketplace=Marketplace.PROM, price=500)
     )
 
 
-def test_public_short_article_inside_title_must_not_zero_out_queries():
+def test_supplier_article_is_never_a_discovery_key_even_when_present_in_title():
     mission = ProductMission(
         article="35-005",
         source_data={
@@ -30,10 +31,38 @@ def test_public_short_article_inside_title_must_not_zero_out_queries():
             "brand": "Polax",
         },
     )
-    queries = asyncio.run(PromScout(timeout=1).generate_queries(mission))
 
-    assert queries, "A public short article embedded in the human product title must not produce zero discovery queries"
-    assert any("35-005" in q or "Бокорезы Polax" in q for q in queries)
+    raw_queries = build_queries(mission)
+    scout_queries = asyncio.run(PromScout(timeout=1).generate_queries(mission))
+
+    assert raw_queries, "Removing the supplier article must not leave Discovery without descriptive queries"
+    assert scout_queries, "Catalog Discovery must still have descriptive queries after article removal"
+    assert all("35-005" not in query for query in raw_queries), raw_queries
+    assert all("35-005" not in query for query in scout_queries), scout_queries
+    assert any("Бокорезы" in query and "Polax" in query for query in scout_queries), scout_queries
+
+
+def test_internal_supplier_article_must_not_become_discovery_query():
+    mission = ProductMission(
+        article="INTERNAL-12345",
+        source_data={"name": "Молоток слесарный Polax 1000 г", "brand": "Polax"},
+    )
+    queries = build_queries(mission)
+    assert all("INTERNAL-12345" not in q for q in queries), queries
+
+
+def test_explicit_external_model_remains_a_valid_discovery_identifier():
+    mission = ProductMission(
+        article="ROW-9911",
+        source_data={
+            "name": "Монитор Xiaomi Redmi A27Q 2025",
+            "brand": "Xiaomi",
+            "mpn": "P27QCB-RA",
+        },
+    )
+    queries = build_queries(mission)
+    assert any("P27QCB-RA" in q for q in queries), queries
+    assert all("ROW-9911" not in q for q in queries), queries
 
 
 def test_exact_public_short_article_can_confirm_identity():
@@ -51,7 +80,7 @@ def test_exact_public_short_article_can_confirm_identity():
 
     assert checked.verdict == Verdict.PASS
     assert checked.identity_confidence == IdentityConfidence.CONFIRMED, (
-        "An exact public article/SKU copied in the source product name and candidate SKU must be strong identity evidence"
+        "An exact article visible on both sides may be validation evidence, but it must not drive Discovery"
     )
 
 
