@@ -1,0 +1,86 @@
+name: PUMA Round2 Live Canary
+
+on:
+  push:
+    branches: [puma-round2-live-canary]
+    paths:
+      - '.github/workflows/puma-round2-live-canary.yml'
+
+jobs:
+  live-canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Run targeted production canary
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE='https://rizweb-0-2.onrender.com'
+          cat > canary.csv <<'CSV'
+          Артикул;Название;Бренд
+          36-031;Молоток Polax слесарный c ручкой из дерева 1000 г DIN 1041 (36-031);Polax
+          05060948065887;Портативная батарея с функцией автозапуска XON PowerBoost 25000 mAh 500A peak 1000A Черный (TC1N 5887);XON
+          SGR-70;Генератор дизельный Soygen SGR-70 50 кВт 70 кВА 380 В;Soygen
+          CSV
+
+          curl -fsS -D headers.txt -o /dev/null             -F 'catalog=@canary.csv;type=text/csv'             -F 'supplier=PUMA round2 live canary'             -F 'limit=3'             -F 'marketplaces=prom'             -F 'marketplaces=epicentr'             -F 'marketplaces=hotline'             -F 'marketplaces=web_shops'             "$BASE/analyze"
+
+          location="$(awk 'BEGIN{IGNORECASE=1} /^location:/{gsub("\r",""); print $2}' headers.txt | tail -1)"
+          jid="$(printf '%s' "$location" | sed -E 's#^.*/jobs/([0-9a-f]+).*#\1#')"
+          test -n "$jid"
+          echo "PUMA_ROUND2_JOB_ID=$jid"
+
+          status=''
+          for i in $(seq 1 300); do
+            curl -fsS "$BASE/api/jobs/$jid" -o status.json
+            status="$(python -c 'import json; print(json.load(open("status.json",encoding="utf-8")).get("status",""))')"
+            if [ "$status" = done ]; then break; fi
+            if [ "$status" = error ] || [ "$status" = interrupted ]; then cat status.json; exit 1; fi
+            sleep 5
+          done
+          test "$status" = done
+
+          python - <<'PY'
+          import json,re,sys
+          d=json.load(open('status.json',encoding='utf-8'))
+          s=d.get('summary') or {}
+          products=s.get('product_results') or []
+          print('PUMA_ROUND2_SUMMARY='+json.dumps({
+              'job_id':d.get('id'),
+              'engine_build':d.get('engine_build'),
+              'products':s.get('products'),
+              'found_products':s.get('found_products'),
+              'found_pct':s.get('found_pct'),
+              'offers':s.get('offers'),
+              'confirmed':s.get('confirmed'),
+              'probable':s.get('probable'),
+          },ensure_ascii=False))
+          by={p.get('article'):p for p in products}
+          expected={'36-031','05060948065887','SGR-70'}
+          missing=[]
+          contamination=[]
+          for article in sorted(expected):
+              p=by.get(article) or {}
+              print('PUMA_ROUND2_PRODUCT='+json.dumps({
+                  'article':article,
+                  'status':p.get('status'),
+                  'offers':p.get('offers'),
+                  'sources':p.get('sources'),
+                  'confirmed':p.get('confirmed'),
+                  'probable':p.get('probable'),
+                  'marketplaces':p.get('marketplaces'),
+                  'offers_detail':[{k:o.get(k) for k in ('source','price','found_title','url','identity_confidence','match')} for o in p.get('offers_detail',[])],
+                  'diagnostics':p.get('diagnostics'),
+              },ensure_ascii=False))
+              if p.get('status')!='FOUND':
+                  missing.append(article)
+              if article=='SGR-70':
+                  for o in p.get('offers_detail',[]):
+                      title=str(o.get('found_title') or '')
+                      if re.search(r'\bSGN\s*[- ]?\s*125\b',title,re.I):
+                          contamination.append(title)
+          print('PUMA_ROUND2_MISSING='+json.dumps(missing,ensure_ascii=False))
+          print('PUMA_ROUND2_CONTAMINATION='+json.dumps(contamination,ensure_ascii=False))
+          if missing or contamination:
+              sys.exit(1)
+          PY
