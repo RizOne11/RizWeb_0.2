@@ -15,6 +15,8 @@ jobs:
         run: |
           set -euo pipefail
           curl -fsS 'https://rizweb-0-2.onrender.com/api/jobs/e08e531b431b' -o status.json
+          curl -fsS 'https://rizweb-0-2.onrender.com/jobs/8a33eb4ada73/xlsx' -o baseline.xlsx
+          pip -q install openpyxl
           python - <<'PY'
           import json
           d=json.load(open('status.json',encoding='utf-8'))
@@ -31,4 +33,15 @@ jobs:
                   print('  pass/conflict/reject=',diag.get('pass'),diag.get('conflict'),diag.get('reject'))
                   print('  reasons=',diag.get('reasons'))
                   print('  errors=',diag.get('errors'))
+          PY
+
+          python - <<'PY'
+          from puma_scouts.production import read_missions
+          from puma_scouts.variant_engine import named_generations
+          missions=read_missions('baseline.xlsx',limit=15)
+          for m in missions:
+              if m.article in {'36-031','05060948065887','SGR-70'}:
+                  source_text=' '.join(str(v) for v in m.source_data.values())
+                  print('MISSION',m.article,repr(m.source_data))
+                  print('GENERATIONS',m.article,named_generations(source_text))
           PY
