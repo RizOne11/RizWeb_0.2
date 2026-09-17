@@ -84,16 +84,35 @@ def _load_remote_jobs() -> None:
             legacy._jobs[job_id] = dict(data)
 
 
+def _storage_is_healthy() -> bool:
+    """Verify that configured S3 credentials can at least list the job prefix.
+
+    This intentionally avoids logging endpoint, bucket or credential details.
+    Actual job writes are still verified by the normal upload/status path.
+    """
+    if not _STORE.enabled:
+        return False
+    _STORE.list_remote_job_ids()
+    return _STORE.last_error is None
+
+
 # Route functions and workers resolve these globals from the legacy module at
 # runtime, so replacing them here upgrades the existing app without duplicating it.
 legacy.set_job = set_job
 legacy.get_job = get_job
 _load_remote_jobs()
 
+_startup_storage_healthy = _storage_is_healthy()
+print(
+    f"PUMA_STORAGE mode={_STORE.mode} durable={str(_STORE.enabled and _startup_storage_healthy).lower()}",
+    flush=True,
+)
+
 
 @legacy.app.get("/api/storage")
 def storage_status():
-    return jsonify({"mode": _STORE.mode, "durable": _STORE.enabled})
+    healthy = _storage_is_healthy()
+    return jsonify({"mode": _STORE.mode, "durable": bool(_STORE.enabled and healthy)})
 
 
 app = legacy.app
