@@ -1,0 +1,34 @@
+name: PUMA Job Diagnostics e08
+
+on:
+  push:
+    branches: [puma-production-canary-run2]
+    paths:
+      - '.github/workflows/puma-job-diag-e08.yml'
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsS 'https://rizweb-0-2.onrender.com/api/jobs/e08e531b431b' -o status.json
+          python - <<'PY'
+          import json
+          d=json.load(open('status.json',encoding='utf-8'))
+          products=(d.get('summary') or {}).get('product_results') or []
+          wanted={'36-031','05060948065887','SGR-70'}
+          for p in products:
+              if p.get('article') not in wanted:
+                  continue
+              print('PRODUCT',p.get('article'),p.get('name'),p.get('status'))
+              for source,diag in (p.get('diagnostics') or {}).items():
+                  print(' SOURCE',source)
+                  print('  health=',diag.get('health'))
+                  print('  queries=',diag.get('queries'),'pages=',diag.get('pages'),'candidates=',diag.get('candidates'),'seen=',diag.get('seen'),'accepted=',diag.get('accepted'))
+                  print('  pass/conflict/reject=',diag.get('pass'),diag.get('conflict'),diag.get('reject'))
+                  print('  reasons=',diag.get('reasons'))
+                  print('  errors=',diag.get('errors'))
+          PY
