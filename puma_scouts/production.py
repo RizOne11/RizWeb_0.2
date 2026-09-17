@@ -8,6 +8,11 @@ from .classic_report import save_classic
 from .models import IdentityConfidence,ProductMission,Verdict,ScanHealth,ScanReport
 
 def _text(v:Any)->str:return "" if v is None else str(v).strip()
+def _currency_code(v:Any)->str:
+    text=_text(v).upper().replace(".","")
+    aliases={"":"UAH","UAH":"UAH","ГРН":"UAH","₴":"UAH","HUA":"UAH","USD":"USD","$":"USD","US$":"USD","EUR":"EUR","€":"EUR"}
+    return aliases.get(text,text or "UAH")
+def _is_uah_currency(v:Any)->bool:return _currency_code(v)=="UAH"
 ALIASES={
     "article":{"артикул","article","sku","код","vendorcode","vendor_code"},
     "name":{"назва","название","name","товар","product","title"},
@@ -119,25 +124,35 @@ async def scan_detailed(mission:ProductMission,selected:list[str]|None=None)->tu
         accepted=0
         verdicts=Counter()
         identities=Counter()
+        price_integrity=Counter()
         for item in report.offers:
             verdicts[item.verdict.value]+=1
             if item.identity_confidence:identities[item.identity_confidence.value]+=1
             if item.verdict!=Verdict.PASS or item.identity_confidence not in {None,IdentityConfidence.CONFIRMED,IdentityConfidence.PROBABLE}:continue
-            accepted+=1;o=item.offer
+            o=item.offer
+            currency=_currency_code(o.currency)
+            if o.price is not None and currency!="UAH":
+                price_integrity[f"non-UAH price excluded: {currency}"]+=1
+                continue
+            accepted+=1
             rows.append({
                 "article":mission.article,"name":mission.source_data.get("name",""),"brand":mission.source_data.get("brand",""),
                 "model":mission.source_data.get("model",""),"own_price":mission.source_data.get("own_price",""),"source":source,
-                "price":float(o.price) if o.price is not None else None,"currency":o.currency,"availability":o.availability or "",
+                "price":float(o.price) if o.price is not None else None,"currency":currency,"availability":o.availability or "",
                 "found_title":o.title,"url":str(o.url),"match":round(item.score,3),
                 "identity_confidence":item.identity_confidence.value if item.identity_confidence else "LEGACY_PASS",
                 "domain":o.attributes.get("source_domain","") or str(o.url).split('/')[2],"health":report.health.value
             })
+        reason_summary=_reason_summary(report)
+        if price_integrity:
+            price_reasons=" | ".join(f"{reason} ×{count}" for reason,count in price_integrity.items())
+            reason_summary=" | ".join(x for x in (reason_summary,price_reasons) if x)
         diagnostics[source]={
             "health":report.health.value,"queries":report.queries_generated,"pages":report.pages_scanned,
             "candidates":report.candidates_collected,"seen":report.candidates_seen,"accepted":accepted,
             "pass":verdicts.get("PASS",0),"conflict":verdicts.get("CONFLICT",0),"reject":verdicts.get("REJECT",0),
             "ambiguous":identities.get("AMBIGUOUS",0),"identity_conflict":identities.get("CONFLICT",0),
-            "reasons":_reason_summary(report),"errors":list(report.errors or []),
+            "reasons":reason_summary,"errors":list(report.errors or []),
         }
     dedup={}
     for x in rows:
@@ -155,7 +170,7 @@ async def scan(mission:ProductMission,selected:list[str]|None=None)->list[dict[s
 def _market_summary(offers):
     groups={}
     for x in offers:
-        if x.get("price") is None:continue
+        if x.get("price") is None or not _is_uah_currency(x.get("currency","UAH")):continue
         groups.setdefault(x["source"],[]).append(x["price"])
     return " | ".join(f"{src}: "+", ".join(f"{price:g} грн"+(f" ×{prices.count(price)}" if prices.count(price)>1 else "") for price in sorted(set(prices))) for src,prices in sorted(groups.items()))
 
@@ -164,7 +179,7 @@ def product_report(missions:list[ProductMission],rows:list[dict[str,Any]],diagno
     for x in rows:by_article.setdefault(x["article"],[]).append(x)
     diagnostics_by_article=diagnostics_by_article or {};report=[]
     for m in missions:
-        offers=by_article.get(m.article,[]);priced=[x["price"] for x in offers if x.get("price") is not None];conf=Counter(x.get("identity_confidence","LEGACY_PASS") for x in offers)
+        offers=by_article.get(m.article,[]);priced=[x["price"] for x in offers if x.get("price") is not None and _is_uah_currency(x.get("currency","UAH"))];conf=Counter(x.get("identity_confidence","LEGACY_PASS") for x in offers)
         report.append({
             "article":m.article,"name":m.source_data.get("name",""),"brand":m.source_data.get("brand",""),"model":m.source_data.get("model",""),
             "category":m.source_data.get("category",""),"supplier":m.source_data.get("supplier",""),"old_price":m.source_data.get("old_price",""),
@@ -186,7 +201,7 @@ def save(rows:list[dict[str,Any]],output:str,missions:list[ProductMission]|None=
     ws.append(["Артикул","Назва","Бренд","Модель","Вхідна ціна","Джерело","Ціна","Валюта","Наявність","Знайдена назва","URL","Match","Identity Confidence","Домен","Health"]);defaults={"identity_confidence":"LEGACY_PASS","domain":"","health":"","own_price":""}
     for x in rows:ws.append([x.get(k,defaults.get(k,"")) for k in keys])
     ws.freeze_panes="A2";ws.auto_filter.ref=ws.dimensions
-    summary=wb.create_sheet("Ціна → картки");summary.append(["Артикул","Назва","Джерело","Ціна","Карток"]);groups=Counter((x["article"],x["name"],x["source"],x["price"]) for x in rows if x.get("price") is not None)
+    summary=wb.create_sheet("Ціна → картки");summary.append(["Артикул","Назва","Джерело","Ціна","Карток"]);groups=Counter((x["article"],x["name"],x["source"],x["price"]) for x in rows if x.get("price") is not None and _is_uah_currency(x.get("currency","UAH")))
     for key,count in sorted(groups.items(),key=lambda z:(z[0][0],z[0][2],z[0][3])):summary.append([*key,count])
     summary.freeze_panes="A2";summary.auto_filter.ref=summary.dimensions
     diag=wb.create_sheet("Discovery діагностика")
