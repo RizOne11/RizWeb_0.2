@@ -31,7 +31,7 @@ _ENTITY_PATTERNS = {
     "ssd": r"\b(?:ssd|твердотільн\w+ накопичувач|твердотельн\w+ накопитель)\b",
     "hdd": r"\b(?:hdd|жорстк\w+ диск|жестк\w+ диск)\b",
     "tire": r"\b(?:шина|шини|шины|tyre|tire)\b",
-    "clothing": r"\b(?:футболка|сорочка|рубашка|куртка|штани|брюки|сукня|платье|hoodie|t-shirt)\b",
+    "clothing": r"\b(?:футболка|сорочка|рубашка|куртка|штани|брюки|сукня|платье|hoodie|t-shirt|кросівки|кроссовки|взуття|обувь|shoes|sneakers)\b",
     "perfume": r"\b(?:парфум|парфюм|туалетн\w+ вод|eau de|perfume)\b",
 }
 
@@ -67,6 +67,12 @@ def _sizes(text:str)->set[str]:
     raw=str(text or "").casefold();out=set()
     for value in re.findall(r"(?<!\d)(\d{1,3}(?:[.,]\d+)?)\s*(?:inch|inches|\")",raw,re.I):out.add(value.replace(",",".")+"in")
     for value,unit in re.findall(r"(?<!\d)(\d+(?:[.,]\d+)?)\s*(mm|мм|cm|см|ml|мл|kg|кг)\b",raw,re.I):out.add(value.replace(",",".")+unit.casefold())
+    # Explicit apparel/footwear size. Bare model numbers remain core identity,
+    # while "size/розмір 42" is a material variant.
+    for value in re.findall(r"\b(?:розмір|размер|size)\s*[:#-]?\s*(\d{1,3}(?:[.,]\d+)?)\b",raw,re.I):out.add("size:"+value.replace(",","."))
+    # Tire dimensions are one atomic variant; comparing isolated numbers would
+    # confuse model/generation ordinals with width/profile/rim.
+    for width,profile,rim in re.findall(r"(?<!\d)(\d{3})\s*/\s*(\d{2})\s*r\s*(\d{2})(?!\d)",raw,re.I):out.add(f"tire:{width}/{profile}r{rim}")
     return out
 
 
@@ -91,23 +97,16 @@ def _short_family(tokens:frozenset[str])->set[str]:
 
 
 def named_generations(text:str)->dict[str,int]:
-    """Named-family ordinal, e.g. AirPods Pro 2 / Watch 7 / Buds 3.
-    Storage/capacity forms such as NV2 1TB are deliberately excluded.
-    """
     t=norm(text);out={};words=t.split()
-    skip={"gb","гб","tb","тб","hz","гц","mm","мм","cm","см","ml","мл","usb","type","wifi","lte"}
+    skip={"gb","гб","tb","тб","hz","гц","mm","мм","cm","см","ml","мл","usb","type","wifi","lte","розмір","размер","size"}
     units={"gb","гб","tb","тб","hz","гц","mm","мм","cm","см","ml","мл","kg","кг","w","вт"}
     for i in range(len(words)-1):
-        family=re.sub(r"[^a-zа-яіїє]","",words[i],flags=re.I)
-        nxt=re.sub(r"[^0-9]","",words[i+1])
+        family=re.sub(r"[^a-zа-яіїє]","",words[i],flags=re.I);nxt=re.sub(r"[^0-9]","",words[i+1])
         if not family or family in skip or not nxt:continue
-        # A small number followed by a measurement/capacity unit belongs to the
-        # variant specification, not to the preceding model token (NV2 1TB).
-        if i+2 < len(words):
+        if i+2<len(words):
             following=re.sub(r"[^a-zа-яіїє]","",words[i+2],flags=re.I)
             if following in units:continue
-        # Also handle compact forms such as 1TB / 2GB.
-        if re.fullmatch(r"\d{1,4}(?:gb|гб|tb|тб|hz|гц|mm|мм|cm|см|ml|мл|kg|кг|w|вт)", words[i+1], re.I):continue
+        if re.fullmatch(r"\d{1,4}(?:gb|гб|tb|тб|hz|гц|mm|мм|cm|см|ml|мл|kg|кг|w|вт)",words[i+1],re.I):continue
         n=int(nxt)
         if 1<=n<=20:out[family]=n
     return out
@@ -126,10 +125,8 @@ def generation_confirmation(expected_text:str,candidate_text:str)->tuple[bool,st
 def identity_conflicts(expected_text:str,candidate_text:str)->list[str]:
     expected,candidate=signature(expected_text),signature(candidate_text);out=[]
     part_entities={"spare_part","accessory","component"}
-    if candidate.entity in part_entities and expected.entity not in part_entities:
-        out.append(f"whole-product mismatch: candidate is {candidate.entity}")
-    elif expected.entity and candidate.entity and expected.entity!=candidate.entity:
-        out.append(f"entity mismatch: expected {expected.entity}, got {candidate.entity}")
+    if candidate.entity in part_entities and expected.entity not in part_entities:out.append(f"whole-product mismatch: candidate is {candidate.entity}")
+    elif expected.entity and candidate.entity and expected.entity!=candidate.entity:out.append(f"entity mismatch: expected {expected.entity}, got {candidate.entity}")
     ef,cf=_short_family(expected.core_tokens),_short_family(candidate.core_tokens)
     if ef and cf and ef.isdisjoint(cf):out.append(f"product family mismatch: expected {sorted(ef)}, got {sorted(cf)}")
     elif expected.core_tokens and candidate.core_tokens and expected.core_tokens.isdisjoint(candidate.core_tokens):out.append(f"product core mismatch: expected {sorted(expected.core_tokens)}, got {sorted(candidate.core_tokens)}")
