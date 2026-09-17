@@ -9,8 +9,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: Resolve active rerun
+      - name: Show post-brand-lock rerun
         run: |
           set -euo pipefail
-          curl -fsS -X POST 'https://rizweb-0-2.onrender.com/api/jobs/8a33eb4ada73/rerun'
-# post-brand-lock
+          curl -fsS 'https://rizweb-0-2.onrender.com/api/jobs/ea04892bf9cb'
+# post-brand-lock-status
