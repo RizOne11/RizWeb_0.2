@@ -14,6 +14,7 @@ from bs4 import BeautifulSoup
 from puma_scouts.models import Marketplace, Offer, ProductMission, ScanHealth, ScanReport, Verdict
 from puma_scouts.query import generate_queries
 from puma_scouts.scouts.base import MarketplaceScout
+from puma_scouts.serper import SerperDiscovery
 from puma_scouts.validator import validate_offer
 
 
@@ -90,6 +91,7 @@ class CatalogScout(MarketplaceScout):
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128 Safari/537.36",
             "Accept-Language": "uk-UA,uk;q=0.9,ru;q=0.7,en;q=0.5",
         }
+        self.serper = SerperDiscovery(max_results=max_candidates_per_query, timeout=min(timeout, 10.0))
 
     async def generate_queries(self, mission: ProductMission) -> list[str]:
         article = mission.article.casefold().strip()
@@ -190,6 +192,10 @@ class CatalogScout(MarketplaceScout):
                     return list(found)
         return list(found)
 
+    async def _serper_candidate_urls(self, client: httpx.AsyncClient, query: str) -> list[str]:
+        urls = await self.serper.search_urls(query, client=client, site=self.host)
+        return [url for url in urls if self._is_candidate(url)][: self.max_candidates_per_query]
+
     def _offer(self, mission: ProductMission, url: str, page: str, query: str, method: str) -> Offer | None:
         products = _jsonld_products(page)
         if not products:
@@ -246,6 +252,8 @@ class CatalogScout(MarketplaceScout):
     async def _discover_stage(self, client: httpx.AsyncClient, mission: ProductMission, query: str, method: str) -> tuple[int, list[Offer]]:
         if method == "native":
             urls = await self._native_candidate_urls(client, query)
+        elif method == "serper":
+            urls = await self._serper_candidate_urls(client, query)
         else:
             urls = await self._external_candidate_urls(client, query)
         offers = await self._fetch_offers(client, mission, query, urls, method)
@@ -257,7 +265,10 @@ class CatalogScout(MarketplaceScout):
             if offers:
                 return offers
             _, fallback = await self._discover_stage(client, mission, query, "external")
-            return fallback
+            if fallback:
+                return fallback
+            _, serper = await self._discover_stage(client, mission, query, "serper")
+            return serper
 
     async def scan(self, mission: ProductMission) -> ScanReport:
         queries = (await self.generate_queries(mission))[:4]
@@ -282,8 +293,8 @@ class CatalogScout(MarketplaceScout):
             validated = [validate_offer(mission, o) for o in unique.values()]
             passes = [x for x in validated if x.verdict == Verdict.PASS]
 
-            if not passes and queries:
-                fallback_queries = queries[:2]
+            fallback_queries = queries[:2]
+            if not passes and fallback_queries:
                 external_results = await asyncio.gather(
                     *(self._discover_stage(client, mission, q, "external") for q in fallback_queries),
                     return_exceptions=True,
@@ -291,6 +302,23 @@ class CatalogScout(MarketplaceScout):
                 for q, result in zip(fallback_queries, external_results):
                     if isinstance(result, Exception):
                         errors.append(f"external {q!r}: {type(result).__name__}: {result}")
+                        continue
+                    count, offers = result
+                    seen += count
+                    for offer in offers:
+                        unique.setdefault(str(offer.url), offer)
+
+                validated = [validate_offer(mission, o) for o in unique.values()]
+                passes = [x for x in validated if x.verdict == Verdict.PASS]
+
+            if not passes and fallback_queries and self.serper.enabled:
+                serper_results = await asyncio.gather(
+                    *(self._discover_stage(client, mission, q, "serper") for q in fallback_queries),
+                    return_exceptions=True,
+                )
+                for q, result in zip(fallback_queries, serper_results):
+                    if isinstance(result, Exception):
+                        errors.append(f"serper {q!r}: {type(result).__name__}: {result}")
                         continue
                     count, offers = result
                     seen += count
