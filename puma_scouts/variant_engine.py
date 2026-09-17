@@ -24,7 +24,7 @@ class ProductSignature:
 _ENTITY_PATTERNS = {
     "smartphone": r"\b(?:смартфон|smartphone|мобільн(?:ий|ого) телефон|мобильн(?:ый|ого) телефон)\b",
     "monitor": r"\b(?:монітор|монитор|monitor)\b",
-    "headphones": r"\b(?:навушники|наушники|headphones|earbuds|airpods)\b",
+    "headphones": r"\b(?:навушники|наушники|гарнітура|гарнитура|headphones|headset|earbuds|airpods)\b",
     "television": r"\b(?:телевізор|телевизор|television|tv)\b",
     "laptop": r"\b(?:ноутбук|laptop)\b",
     "tablet": r"\b(?:планшет|tablet)\b",
@@ -51,12 +51,14 @@ _COLOR_GROUPS = {
     "violet":{"violet","purple","фіолетовий","фіолетова","фиолетовый","фиолетовая"},
     "pink":{"pink","рожевий","рожева","розовый","розовая"},
     "gold":{"gold","золотий","золотой"},
-    "silver":{"silver","срібний","серебристый"},
-    "gray":{"gray","grey","сірий","серый"},
-    "orange":{"orange"},"brown":{"brown"},
+    "silver":{"silver","срібний","сріблястий","серебристый","серебряный"},
+    "gray":{"gray","grey","сірий","сіра","серый","серая"},
+    "orange":{"orange","помаранчевий","помаранчева","оранжевый","оранжевая"},
+    "brown":{"brown","коричневий","коричнева","коричневый","коричневая"},
+    "beige":{"beige","бежевий","бежева","бежевый","бежевая"},
 }
 _COLOR_WORDS=set().union(*_COLOR_GROUPS.values())
-_STOP = {"смартфон","smartphone","монітор","монитор","monitor","навушники","наушники","headphones","earbuds","телевізор","телевизор","ноутбук","laptop","планшет","tablet","apple","samsung","xiaomi","redmi","galaxy","pro","plus","max","gen","generation","with","case","gb","гб","5g","lte","2k","4k","ips","hdr10","usb","type","charging","magsafe"}|_COLOR_WORDS
+_STOP = {"смартфон","smartphone","монітор","монитор","monitor","навушники","наушники","гарнітура","гарнитура","headphones","headset","earbuds","телевізор","телевизор","ноутбук","laptop","планшет","tablet","apple","samsung","xiaomi","redmi","galaxy","pro","plus","max","gen","generation","with","case","gb","гб","5g","lte","2k","4k","ips","hdr10","usb","type","charging","magsafe"}|_COLOR_WORDS
 
 
 def entity_type(text: str) -> str | None:
