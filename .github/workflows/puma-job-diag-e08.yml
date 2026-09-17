@@ -10,13 +10,14 @@ jobs:
   diag:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - name: Fetch diagnostics
         shell: bash
         run: |
           set -euo pipefail
           curl -fsS 'https://rizweb-0-2.onrender.com/api/jobs/e08e531b431b' -o status.json
           curl -fsS 'https://rizweb-0-2.onrender.com/jobs/8a33eb4ada73/xlsx' -o baseline.xlsx
-          pip -q install openpyxl
+          pip -q install -r requirements.txt
           python - <<'PY'
           import json
           d=json.load(open('status.json',encoding='utf-8'))
