@@ -1,4 +1,4 @@
-name: PUMA Round2 Live Canary
+name: PUMA Model Lock Live Canary
 
 on:
   push:
@@ -74,11 +74,16 @@ jobs:
               },ensure_ascii=False))
               if p.get('status')!='FOUND':
                   missing.append(article)
-              if article=='SGR-70':
-                  for o in p.get('offers_detail',[]):
-                      title=str(o.get('found_title') or '')
-                      if re.search(r'\bSGN\s*[- ]?\s*125\b',title,re.I):
-                          contamination.append(title)
+              for o in p.get('offers_detail',[]):
+                  title=str(o.get('found_title') or '')
+                  if article=='SGR-70':
+                      for family,num in re.findall(r'\b(SG[RN])\s*[- ]?\s*(\d{2,3})\b',title,re.I):
+                          if family.upper()!='SGR' or num!='70':
+                              contamination.append(title)
+                  if article=='05060948065887':
+                      for suffix in re.findall(r'\bTC1N\s*[- ]?\s*(\d{3,6})\b',title,re.I):
+                          if suffix!='5887':
+                              contamination.append(title)
           print('PUMA_ROUND2_MISSING='+json.dumps(missing,ensure_ascii=False))
           print('PUMA_ROUND2_CONTAMINATION='+json.dumps(contamination,ensure_ascii=False))
           if missing or contamination:
