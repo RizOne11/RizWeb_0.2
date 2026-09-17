@@ -87,7 +87,7 @@ def _display_diagonal(text:str)->str|None:
 
 def _sizes(text:str)->set[str]:
     raw=str(text or "").casefold();out=set()
-    for value in re.findall(r"(?<!\d)(\d{1,3}(?:[.,]\d+)?)\s*(?:inch|inches|\")",raw,re.I):out.add(value.replace(",",".")+"in")
+    for value in re.findall(r"(?<!\d)(\d{1,3}(?:[.,]\d+)?)\s*(?:inch|inches|дюйм\w*|\")",raw,re.I):out.add(value.replace(",",".")+"in")
     for value,unit in re.findall(r"(?<!\d)(\d+(?:[.,]\d+)?)\s*(mm|мм|cm|см|ml|мл|kg|кг)\b",raw,re.I):out.add(value.replace(",",".")+unit.casefold())
     for value in re.findall(r"\b(?:розмір|размер|size)\s*[:#-]?\s*(\d{1,3}(?:[.,]\d+)?)\b",raw,re.I):out.add("size:"+value.replace(",","."))
     for width,profile,rim in re.findall(r"(?<!\d)(\d{3})\s*/\s*(\d{2})\s*r\s*(\d{2})(?!\d)",raw,re.I):out.add(f"tire:{width}/{profile}r{rim}")
