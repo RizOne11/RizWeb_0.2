@@ -90,7 +90,11 @@ def _brand_conflict(expected: str | None, offer_text: str) -> str | None:
         re.I,
     )
     prefix = [w for w in words[:idx] if len(w) >= 3 and not descriptor.match(w) and not w.isdigit()]
-    if len(prefix) == 1 and re.fullmatch(r"[a-zа-яіїє][a-zа-яіїє0-9]{2,24}", prefix[0], re.I):
+    # Treat only a Latin brand-like token as a foreign leading brand.
+    # Cyrillic words before the brand are overwhelmingly product descriptors/
+    # adjectives (e.g. "молоток Polax", "керамический Emby") and must not
+    # become false brand conflicts.
+    if len(prefix) == 1 and re.fullmatch(r"[a-z][a-z0-9]{2,24}", prefix[0], re.I):
         return f"brand conflict: foreign leading brand {prefix[0]} before expected {expected}"
     return None
 
