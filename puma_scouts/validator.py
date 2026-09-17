@@ -140,7 +140,7 @@ def _foreign_brand_before_model_conflict(
 
 def _accessory_conflict(src: str, off: str) -> str | None:
     accessory = re.compile(
-        r"(?:\bамбушур\w*\b|\bear\s*pad\w*\b|\bearpad\w*\b|"
+        r"(?:\bамбуш[ую]р\w*\b|\bear\s*pad\w*\b|\bearpad\w*\b|"
         r"\bнакладк\w*\s+на\s+оголов\w*\b|\bheadband\s+(?:cover|cushion|pad)\w*\b|"
         r"\b(?:кейс|чехол|чохол|case)\s+(?:для|for)\b)",
         re.I,
