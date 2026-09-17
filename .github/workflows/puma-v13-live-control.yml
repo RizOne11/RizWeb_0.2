@@ -19,24 +19,28 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - name: Diagnose Epicentr live price payload
+      - name: Probe Epicentr Samsung search price payload
         run: |
           python - <<'PY'
-          import re,httpx,json
-          from puma_scouts.scouts.epicentr import _extract_embedded_price,_jsonld_products,_meta
-          u='https://epicentrk.ua/shop/smartfon-samsung-galaxy-a55-5g-8-256gb-light-violet-sm-a556blvceuc.html'
+          import html,json,re,httpx
+          from urllib.parse import quote_plus
+          from puma_scouts.scouts.epicentr import _extract_embedded_price
           h={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128 Safari/537.36','Accept-Language':'uk-UA,uk;q=0.9,ru;q=0.7,en;q=0.5'}
-          r=httpx.get(u,headers=h,follow_redirects=True,timeout=20); text=r.text
-          products=_jsonld_products(text)
-          offers=[]
-          for p in products:
-            o=p.get('offers'); offers.extend(o if isinstance(o,list) else [o] if isinstance(o,dict) else [])
-          markers={k:(k in text) for k in ['17 999','17999','product:price:amount','itemprop="price"','data-price','currentPrice','finalPrice','priceValue','productPrice','salePrice','actualPrice']}
-          snippets=[]
-          for needle in ['17999','17 999','price','₴','грн']:
-            m=re.search(re.escape(needle),text,re.I)
-            if m: snippets.append(re.sub(r'\s+',' ',text[max(0,m.start()-180):m.end()+220])[:500])
-          print('EPICENTR_PRICE_DIAG='+json.dumps({'status':r.status_code,'bytes':len(text),'final_url':str(r.url),'og_price':_meta(text,'product:price:amount') or _meta(text,'og:price:amount'),'embedded':str(_extract_embedded_price(text)) if _extract_embedded_price(text) else None,'jsonld_offers':offers[:3],'markers':markers,'snippets':snippets},ensure_ascii=False),flush=True)
+          queries=['Samsung Galaxy A55 5G 8 256GB','SM-A556B','SM-A556BLVCEUC']
+          needles=['SM-A556BLVCEUC','SM-A556BZKCEUC','SM-A556BLBCEUC','SM-A556BZYCEUC','A55']
+          for q in queries:
+            for key in ('q','search'):
+              u=f'https://epicentrk.ua/ua/search/?{key}={quote_plus(q)}'
+              r=httpx.get(u,headers=h,follow_redirects=True,timeout=20); text=html.unescape(r.text).replace('\\/','/')
+              hits=[]
+              for needle in needles:
+                for m in list(re.finditer(re.escape(needle),text,re.I))[:3]:
+                  chunk=re.sub(r'\s+',' ',text[max(0,m.start()-700):m.end()+1200])
+                  nums=[]
+                  for pat in [r'"(?:price|productPrice|currentPrice|finalPrice|priceValue|salePrice|actualPrice)"\s*:\s*"?([0-9][0-9\s.,]{1,15})',r'([0-9][0-9\s]{3,10})\s*(?:₴|грн)']:
+                    nums.extend(x.strip() for x in re.findall(pat,chunk,re.I))
+                  hits.append({'needle':needle,'prices':nums[:12],'snippet':chunk[:1500]})
+              print('EPICENTR_SEARCH_PRICE_DIAG='+json.dumps({'query':q,'key':key,'status':r.status_code,'bytes':len(text),'embedded_first':str(_extract_embedded_price(text)) if _extract_embedded_price(text) else None,'has_17999':('17999' in text or '17 999' in text),'hits':hits[:8]},ensure_ascii=False),flush=True)
           PY
       - name: Trace Xiaomi discovery and validation
         run: |
