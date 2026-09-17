@@ -112,12 +112,16 @@ def signature(text:str)->ProductSignature:
 def _short_family(tokens:frozenset[str])->set[str]:return {t for t in tokens if len(t)<=8 and re.search(r"[a-zа-яіїє]",t,re.I) and re.search(r"\d",t)}
 
 def named_generations(text:str)->dict[str,int]:
-    t=norm(text);out={};words=t.split();skip={"gb","гб","tb","тб","hz","гц","mm","мм","cm","см","ml","мл","usb","type","wifi","lte","розмір","размер","size"};units={"gb","гб","tb","тб","hz","гц","mm","мм","cm","см","ml","мл","kg","кг","w","вт"}
+    t=norm(text);out={};words=t.split()
+    skip={"gb","гб","tb","тб","hz","гц","mm","мм","cm","см","ml","мл","usb","type","wifi","lte","розмір","размер","size"}
+    units={"gb","гб","tb","тб","hz","гц","mm","мм","cm","см","ml","мл","kg","кг","w","вт","inch","inches","дюйм","дюйма","дюймов","дюйми","дюймів"}
     for i in range(len(words)-1):
-        family=re.sub(r"[^a-zа-яіїє]","",words[i],flags=re.I);nxt=re.sub(r"[^0-9]","",words[i+1])
+        family=re.sub(r"[^a-zа-яіїє]","",words[i],flags=re.I);next_raw=words[i+1];nxt=re.sub(r"[^0-9]","",next_raw)
         if not family or family in skip or not nxt:continue
+        # Numbers carrying an explicit dimension marker are sizes, not product generations.
+        if '"' in next_raw:continue
         if i+2<len(words) and re.sub(r"[^a-zа-яіїє]","",words[i+2],flags=re.I) in units:continue
-        if re.fullmatch(r"\d{1,4}(?:gb|гб|tb|тб|hz|гц|mm|мм|cm|см|ml|мл|kg|кг|w|вт)",words[i+1],re.I):continue
+        if re.fullmatch(r"\d{1,4}(?:gb|гб|tb|тб|hz|гц|mm|мм|cm|см|ml|мл|kg|кг|w|вт|inch|inches)",next_raw,re.I):continue
         n=int(nxt)
         if 1<=n<=20:out[family]=n
     return out
