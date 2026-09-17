@@ -46,6 +46,7 @@ def test_marshall_earpads_do_not_enter_market_basket():
     bad_titles = [
         "Амбушури для навушників Marshall Major IV/4 чорні",
         "Тканинні амбушури Marshall Major III IV V",
+        "Амбушюры для наушников Marshall Major 4 IV BLUETOOTH Черный",
         "Накладка на оголовье для наушников Marshall Major 3 4 5 III IV V",
     ]
     for title in bad_titles:
