@@ -6,7 +6,7 @@ import httpx
 from bs4 import BeautifulSoup
 from puma_scouts.models import Marketplace,Offer,ProductMission,ScanHealth,ScanReport,Verdict
 from puma_scouts.query import generate_queries
-from puma_scouts.scouts.catalog import _canonical,_jsonld_products,_clean,_price
+from puma_scouts.scouts.catalog import _canonical,_jsonld_products,_clean,_price,_currency
 from puma_scouts.scouts.base import MarketplaceScout
 from puma_scouts.validator import validate_offer
 class WebShopsScout(MarketplaceScout):
@@ -50,14 +50,14 @@ class WebShopsScout(MarketplaceScout):
     def _offer(self,m,u,page,q):
         ps=_jsonld_products(page)
         if not ps:return None
-        p=ps[0];title=_clean(p.get("name"));offers=p.get("offers");offers=offers[0] if isinstance(offers,list) and offers else offers;amount=availability=None
-        if isinstance(offers,dict):amount=_price(offers.get("price") or offers.get("lowPrice"));availability=_clean(offers.get("availability")) or None
+        p=ps[0];title=_clean(p.get("name"));offers=p.get("offers");offers=offers[0] if isinstance(offers,list) and offers else offers;amount=availability=None;currency="UAH"
+        if isinstance(offers,dict):amount=_price(offers.get("price") or offers.get("lowPrice"));currency=_currency(offers.get("priceCurrency") or offers.get("currency"));availability=_clean(offers.get("availability")) or None
         if not title or amount is None:return None
         h=urlsplit(u).netloc.casefold().removeprefix("www.");attrs={"source":"web-shop-jsonld","source_domain":h}
         for k in ("sku","mpn","gtin","gtin13","model"):
             if p.get(k):attrs[k]=p[k]
         b=p.get("brand");attrs["brand"]=b.get("name") if isinstance(b,dict) else b
-        return Offer(article=m.article,marketplace=self.marketplace,marketplace_product_id=_clean(p.get("sku")) or None,title=title,price=amount,availability=availability,url=_canonical(u),attributes=attrs,query_used=q,discovery_method="free-web-search->shop-jsonld")
+        return Offer(article=m.article,marketplace=self.marketplace,marketplace_product_id=_clean(p.get("sku")) or None,title=title,price=amount,currency=currency,availability=availability,url=_canonical(u),attributes=attrs,query_used=q,discovery_method="free-web-search->shop-jsonld")
     async def discover(self,m,q):
         out=[]
         async with httpx.AsyncClient(timeout=self.timeout) as c:
