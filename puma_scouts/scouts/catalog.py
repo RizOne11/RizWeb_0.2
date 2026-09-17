@@ -121,6 +121,13 @@ class CatalogScout(MarketplaceScout):
             try:return self._offer(mission,url,await self._get(client,url),query,method)
             except httpx.HTTPError:return None
         fetched=await asyncio.gather(*(fetch_one(url) for url in urls));return [o for o in fetched if o]
+    async def discover(self,mission:ProductMission,query:str)->list[Offer]:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            urls=await self._native_candidate_urls(client,query)
+            offers=await self._fetch_offers(client,mission,query,urls,"native")
+            if offers:return offers
+            fallback_urls=await self._external_candidate_urls(client,query)
+            return await self._fetch_offers(client,mission,query,fallback_urls,"external")
     async def scan(self,mission:ProductMission)->ScanReport:
         queries=(await self.generate_queries(mission))[:4]
         unique={};errors=[];seen=0
