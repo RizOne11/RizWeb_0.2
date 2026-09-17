@@ -1,7 +1,7 @@
 name: PUMA v1.3 Exact Five Smoke
 on:
   push:
-    branches: [puma-v1.3-integration]
+    branches: [main, puma-v1.3-integration]
     paths:
       - .github/workflows/puma-v13-test5.yml
       - puma_scouts/validator.py
@@ -83,4 +83,4 @@ jobs:
           if price_integrity:
               raise SystemExit('EXACT5_PRICE_INTEGRITY_FAILED')
           PY
-# exact-five verification trigger 2026-09-17
+# exact-five verification trigger 2026-09-17 main production gate
