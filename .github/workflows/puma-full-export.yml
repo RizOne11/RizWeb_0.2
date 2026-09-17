@@ -34,3 +34,4 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
+# verified export trigger 2026-09-17
