@@ -50,26 +50,18 @@ def _brand_match(expected:str|None,offer_text:str)->bool:
 
 
 def _brand_conflict(expected:str|None,offer_text:str)->str|None:
-    """Reject a clearly different leading brand while preserving marketplace prose.
-
-    This is intentionally dictionary-free. It only fires when the mission has an
-    explicit brand, that brand is also present in the offer, and the offer starts
-    with another plausible brand token before it. Thus `Logitech ... Apple ...`
-    is contradictory, while descriptive prefixes such as `Навушники Apple ...`
-    do not invent a foreign-brand conflict.
-    """
     if not expected:return None
     n=_norm(offer_text);brand=_norm(expected)
     if not brand or not re.search(rf"\b{re.escape(brand)}\b",n,re.I):return None
     words=n.split();brand_words=brand.split()
-    try:
-        idx=next(i for i in range(len(words)) if words[i:i+len(brand_words)]==brand_words)
-    except StopIteration:
-        return None
+    try: idx=next(i for i in range(len(words)) if words[i:i+len(brand_words)]==brand_words)
+    except StopIteration:return None
     if idx<=0:return None
-    generic={"смартфон","телефон","монітор","монитор","навушники","наушники","headphones","earbuds","ноутбук","laptop","планшет","tablet","телевізор","телевизор","tv","ssd","hdd","шина","шини","шины","tire","tyre","парфум","парфюм","оригінал","оригинал","новий","новый","new"}
-    prefix=[w for w in words[:idx] if len(w)>=3 and w not in generic and not w.isdigit()]
-    if len(prefix)==1 and re.fullmatch(r"[a-zа-яіїє][a-zа-яіїє0-9-]{2,24}",prefix[0],re.I):
+    # Product/category words may legally precede a brand. Keep this semantic and
+    # dictionary-free with stems, rather than maintaining a catalogue of brands.
+    descriptor=re.compile(r"^(?:смартфон|телефон|монітор|монитор|навуш|науш|headphone|earbud|ноутбук|laptop|планшет|tablet|телевіз|телевиз|tv|ssd|hdd|шин|tire|tyre|парф|бездротов|беспровод|wireless|вкладиш|вкладыш|оригінал|оригинал|новий|новый|new)",re.I)
+    prefix=[w for w in words[:idx] if len(w)>=3 and not descriptor.match(w) and not w.isdigit()]
+    if len(prefix)==1 and re.fullmatch(r"[a-zа-яіїє][a-zа-яіїє0-9]{2,24}",prefix[0],re.I):
         return f"brand conflict: foreign leading brand {prefix[0]} before expected {expected}"
     return None
 
@@ -117,12 +109,10 @@ def validate_offer(mission:ProductMission,offer:Offer)->ValidatedOffer:
     ids=extract_identifiers(mission);matched=[i for i in ids if _strong_identifier(i) and _compact(i) and _compact(i) in _compact(offer_text)]
     model=_explicit(mission,{"model","mpn","ean","gtin","gtin13"});mm=_model_match(model,offer_text)
     brand=_explicit(mission,{"brand","manufacturer","vendor"});bm=_brand_match(brand,offer_text)
-    strong=bool(matched or mm)
-    problems=[]
+    strong=bool(matched or mm);problems=[]
     for p in (_authenticity_conflict(source_text,offer_text),_condition_conflict(source_text,offer_text),_quantity_conflict(source_text,offer_text,strong),_brand_conflict(brand,offer_text)):
         if p:problems.append(p)
-    problems.extend(variant_conflicts(source_text,offer_text))
-    problems.extend(_year_refresh_conflicts(source_text,offer_text))
+    problems.extend(variant_conflicts(source_text,offer_text));problems.extend(_year_refresh_conflicts(source_text,offer_text))
     if brand and not (bm or strong):problems.append(f"brand not confirmed: {brand}")
     conflicts=list(dict.fromkeys(problems));positive=[]
     if matched:positive.append("strong identifier match: "+", ".join(matched[:4]))
