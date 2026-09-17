@@ -1,6 +1,6 @@
 import pytest
 
-from puma_scouts.models import Marketplace, Offer, ProductMission, Verdict
+from puma_scouts.models import IdentityConfidence, Marketplace, Offer, ProductMission, Verdict
 from puma_scouts.validator import validate_offer
 
 
@@ -49,6 +49,7 @@ def test_sgr70_exact_model_still_passes():
         _offer(mission, "Генератор дизельний Soygen SGR-70 50 кВт 70 кВА 380 В"),
     )
     assert checked.verdict == Verdict.PASS, checked
+    assert checked.identity_confidence == IdentityConfidence.CONFIRMED, checked
 
 
 @pytest.mark.parametrize("candidate", [
