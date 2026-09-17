@@ -47,4 +47,4 @@ jobs:
           assert data == {'durable': False, 'mode': 'local'}, data
           print('PUMA_PERSISTENCE_DOCKER_OK', data)
           PY
-# snapshot verification trigger 2026-09-17
+# current integration verification trigger 2026-09-17
