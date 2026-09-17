@@ -111,6 +111,28 @@ def signature(text:str)->ProductSignature:
 
 def _short_family(tokens:frozenset[str])->set[str]:return {t for t in tokens if len(t)<=8 and re.search(r"[a-zа-яіїє]",t,re.I) and re.search(r"\d",t)}
 
+
+def _structured_numeric_codes(text: str) -> set[str]:
+    """Extract compact public SKU-like numeric codes, avoiding year/date noise."""
+    return {m.casefold() for m in re.findall(r"(?<!\d)\d{2,3}-\d{3,5}(?!\d)", str(text or ""))}
+
+
+def _public_code_conflict(expected_text: str, candidate_text: str) -> str | None:
+    expected_codes = _structured_numeric_codes(expected_text)
+    candidate_codes = _structured_numeric_codes(candidate_text)
+    if not expected_codes or not candidate_codes:
+        return None
+    for expected in expected_codes:
+        if expected in candidate_codes:
+            continue
+        expected_parts = expected.split("-", 1)
+        for candidate in candidate_codes:
+            candidate_parts = candidate.split("-", 1)
+            if expected_parts[0] == candidate_parts[0] or expected_parts[1] == candidate_parts[1]:
+                return f"public article mismatch: expected {expected}, got {candidate}"
+    return None
+
+
 def named_generations(text:str)->dict[str,int]:
     t=norm(text);out={};words=t.split()
     skip={"gb","гб","tb","тб","hz","гц","mm","мм","cm","см","ml","мл","usb","type","wifi","lte","розмір","размер","size"}
@@ -137,6 +159,8 @@ def generation_confirmation(expected_text:str,candidate_text:str)->tuple[bool,st
 
 def identity_conflicts(expected_text:str,candidate_text:str)->list[str]:
     expected,candidate=signature(expected_text),signature(candidate_text);out=[];part_entities={"spare_part","accessory","component"}
+    public_code_problem=_public_code_conflict(expected_text,candidate_text)
+    if public_code_problem:out.append(public_code_problem)
     if candidate.entity in part_entities and expected.entity not in part_entities:out.append(f"whole-product mismatch: candidate is {candidate.entity}")
     elif expected.entity and candidate.entity and expected.entity!=candidate.entity:out.append(f"entity mismatch: expected {expected.entity}, got {candidate.entity}")
     ef,cf=_short_family(expected.core_tokens),_short_family(candidate.core_tokens)
