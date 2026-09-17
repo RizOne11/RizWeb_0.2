@@ -1,0 +1,17 @@
+name: PUMA Gold Regression
+
+on:
+  push:
+    branches: [puma-gold-regression]
+
+jobs:
+  gold-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: pytest -q tests/test_gold_identity_regressions.py
