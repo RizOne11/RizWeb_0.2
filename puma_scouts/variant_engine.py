@@ -57,7 +57,7 @@ def entity_type(text: str) -> str | None:
 def _memory(text: str) -> tuple[set[int], set[int]]:
     raw=str(text or "").casefold();ram=set();storage=set()
     for a,b in re.findall(r"(?<!\d)(\d{1,2})\s*[/+]\s*(\d{2,4})\s*(?:gb|гб)?\b",raw,re.I): ram.add(int(a));storage.add(int(b))
-    for value,unit in re.findall(r"(?<!\d)(\d{2,4})\s*(gb|гб|tb|тб)\b",raw,re.I):
+    for value,unit in re.findall(r"(?<!\d)(\d{1,4})\s*(gb|гб|tb|тб)\b",raw,re.I):
         n=int(value)*(1024 if unit.casefold() in {"tb","тб"} else 1)
         if n>=32:storage.add(n)
     return ram,storage
@@ -75,7 +75,7 @@ def _core_tokens(text:str)->set[str]:
     for token in raw.split():
         c=re.sub(r"[^a-zа-яіїє0-9]","",token,re.I)
         if not c or c in _STOP or c in _COLOR_WORDS:continue
-        if re.fullmatch(r"\d{1,2}\d{2,4}(?:gb|гб)?",c,re.I):continue
+        if re.fullmatch(r"\d{1,4}(?:gb|гб|tb|тб)",c,re.I):continue
         if re.fullmatch(r"20\d{2}",c) or re.fullmatch(r"\d+(?:hz|гц)?",c):continue
         if re.search(r"[a-zа-яіїє]",c,re.I) and re.search(r"\d",c):out.add(c)
     return out
@@ -92,24 +92,28 @@ def _short_family(tokens:frozenset[str])->set[str]:
 
 def named_generations(text:str)->dict[str,int]:
     """Named-family ordinal, e.g. AirPods Pro 2 / Watch 7 / Buds 3.
-    Only small ordinals directly after a word-family token are considered.
+    Storage/capacity forms such as NV2 1TB are deliberately excluded.
     """
     t=norm(text);out={};words=t.split()
     skip={"gb","гб","tb","тб","hz","гц","mm","мм","cm","см","ml","мл","usb","type","wifi","lte"}
+    units={"gb","гб","tb","тб","hz","гц","mm","мм","cm","см","ml","мл","kg","кг","w","вт"}
     for i in range(len(words)-1):
         family=re.sub(r"[^a-zа-яіїє]","",words[i],flags=re.I)
         nxt=re.sub(r"[^0-9]","",words[i+1])
         if not family or family in skip or not nxt:continue
+        # A small number followed by a measurement/capacity unit belongs to the
+        # variant specification, not to the preceding model token (NV2 1TB).
+        if i+2 < len(words):
+            following=re.sub(r"[^a-zа-яіїє]","",words[i+2],flags=re.I)
+            if following in units:continue
+        # Also handle compact forms such as 1TB / 2GB.
+        if re.fullmatch(r"\d{1,4}(?:gb|гб|tb|тб|hz|гц|mm|мм|cm|см|ml|мл|kg|кг|w|вт)", words[i+1], re.I):continue
         n=int(nxt)
         if 1<=n<=20:out[family]=n
     return out
 
 
 def generation_confirmation(expected_text:str,candidate_text:str)->tuple[bool,str|None]:
-    """Return whether a material named generation in the mission is confirmed.
-    Missing generation is uncertainty, not an invented mismatch. Strong identifiers
-    may override this later in the validator.
-    """
     eg,cg=named_generations(expected_text),named_generations(candidate_text)
     if not eg:return True,None
     common=set(eg)&set(cg)
