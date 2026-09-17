@@ -19,28 +19,43 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - name: Probe Epicentr Samsung search price payload
+      - name: Probe Epicentr client price endpoints
         run: |
           python - <<'PY'
           import html,json,re,httpx
-          from urllib.parse import quote_plus
-          from puma_scouts.scouts.epicentr import _extract_embedded_price
+          from urllib.parse import quote_plus,urljoin,urlsplit
           h={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128 Safari/537.36','Accept-Language':'uk-UA,uk;q=0.9,ru;q=0.7,en;q=0.5'}
-          queries=['Samsung Galaxy A55 5G 8 256GB','SM-A556B','SM-A556BLVCEUC']
-          needles=['SM-A556BLVCEUC','SM-A556BZKCEUC','SM-A556BLBCEUC','SM-A556BZYCEUC','A55']
-          for q in queries:
-            for key in ('q','search'):
-              u=f'https://epicentrk.ua/ua/search/?{key}={quote_plus(q)}'
-              r=httpx.get(u,headers=h,follow_redirects=True,timeout=20); text=html.unescape(r.text).replace('\\/','/')
-              hits=[]
-              for needle in needles:
-                for m in list(re.finditer(re.escape(needle),text,re.I))[:3]:
-                  chunk=re.sub(r'\s+',' ',text[max(0,m.start()-700):m.end()+1200])
-                  nums=[]
-                  for pat in [r'"(?:price|productPrice|currentPrice|finalPrice|priceValue|salePrice|actualPrice)"\s*:\s*"?([0-9][0-9\s.,]{1,15})',r'([0-9][0-9\s]{3,10})\s*(?:₴|грн)']:
-                    nums.extend(x.strip() for x in re.findall(pat,chunk,re.I))
-                  hits.append({'needle':needle,'prices':nums[:12],'snippet':chunk[:1500]})
-              print('EPICENTR_SEARCH_PRICE_DIAG='+json.dumps({'query':q,'key':key,'status':r.status_code,'bytes':len(text),'embedded_first':str(_extract_embedded_price(text)) if _extract_embedded_price(text) else None,'has_17999':('17999' in text or '17 999' in text),'hits':hits[:8]},ensure_ascii=False),flush=True)
+          base='https://epicentrk.ua'
+          q='SM-A556BLVCEUC'
+          search=f'{base}/ua/search/?q={quote_plus(q)}'
+          r=httpx.get(search,headers=h,follow_redirects=True,timeout=20); text=html.unescape(r.text).replace('\\/','/')
+          urls=[]
+          for x in re.findall(r'href=["\']([^"\']+SM-A556[^"\']*\.html)["\']',text,re.I):
+            u=urljoin(search,x)
+            if u not in urls: urls.append(u)
+          if not urls:
+            urls=[urljoin(search,x) for x in re.findall(r'href=["\']([^"\']+\.html)["\']',text,re.I) if 'galaxy-a55' in x.lower()][:2]
+          print('EPICENTR_PRICE_PROBE_PRODUCTS='+json.dumps(urls[:3],ensure_ascii=False),flush=True)
+          for u in urls[:2]:
+            pr=httpx.get(u,headers=h,follow_redirects=True,timeout=20); page=html.unescape(pr.text).replace('\\/','/')
+            ids={k:sorted(set(re.findall(r'["\']?'+k+r'["\']?\s*[:=]\s*["\']?([0-9]{4,})',page,re.I)))[:10] for k in ['productId','productModelId','modelId','offerId','sellerId','merchantId']}
+            scripts=[]
+            for src in re.findall(r'<script[^>]+src=["\']([^"\']+)["\']',page,re.I):
+              su=urljoin(u,src)
+              if su not in scripts:scripts.append(su)
+            endpoint_strings=[]
+            for su in scripts[-25:]:
+              try:
+                js=httpx.get(su,headers=h,follow_redirects=True,timeout=10).text
+              except Exception:continue
+              if any(k in js.lower() for k in ['productmodelid','productid','price']):
+                for pat in [r'["\']([^"\']*(?:api|ajax|price|offer|product)[^"\']*)["\']',r'`([^`]*(?:api|price|offer|product)[^`]*)`']:
+                  for s in re.findall(pat,js,re.I):
+                    if len(s)<260 and ('/' in s or 'http' in s): endpoint_strings.append(s)
+            uniq=[]
+            for s in endpoint_strings:
+              if s not in uniq:uniq.append(s)
+            print('EPICENTR_CLIENT_PRICE_DIAG='+json.dumps({'url':u,'status':pr.status_code,'bytes':len(page),'ids':ids,'scripts':scripts[-12:],'endpoint_hints':uniq[:80]},ensure_ascii=False),flush=True)
           PY
       - name: Trace Xiaomi discovery and validation
         run: |
