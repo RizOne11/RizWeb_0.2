@@ -82,3 +82,4 @@ def test_xon_tc1n5887_ukrainian_exact_variant_passes():
         _offer(mission, "Портативна батарея з функцією автозапуску XON PowerBoost 25000 mAh 500A peak 1000A Чорний (TC1N 5887)"),
     )
     assert checked.verdict == Verdict.PASS, checked
+    assert checked.identity_confidence == IdentityConfidence.CONFIRMED, checked
