@@ -104,6 +104,15 @@ def _core_tokens(text:str)->set[str]:
         if re.fullmatch(r"\d{1,4}(?:gb|гб|tb|тб)",c,re.I):continue
         if re.fullmatch(r"20\d{2}",c) or re.fullmatch(r"\d+(?:hz|гц)?",c):continue
         if re.search(r"[a-zа-яіїє]",c,re.I) and re.search(r"\d",c):out.add(c)
+
+    # Normalize split model families such as "SGN 125" -> "sgn125".
+    # This lets the identity gate compare them with compact/hyphenated forms
+    # such as "SGR-70" without turning standards/measurements into models.
+    ignored_prefixes={"din","iso","iec","en","mah","ah","wh","hz","mm","cm","kg","kw","kva","volt","model","модель"}
+    for prefix,number in re.findall(r"\b([a-zа-яіїє]{2,10})\s*[-_/]?\s*(\d{2,5})\b",raw,re.I):
+        p=prefix.casefold()
+        if p in ignored_prefixes:continue
+        out.add(re.sub(r"[^a-zа-яіїє0-9]","",p+number,re.I))
     return out
 
 def signature(text:str)->ProductSignature:
@@ -140,6 +149,9 @@ def named_generations(text:str)->dict[str,int]:
     for i in range(len(words)-1):
         family=re.sub(r"[^a-zа-яіїє]","",words[i],flags=re.I);next_raw=words[i+1];nxt=re.sub(r"[^0-9]","",next_raw)
         if not family or family in skip or not nxt:continue
+        # A mixed model token such as TC1N is an identifier, not "generation 1"
+        # of the preceding word (e.g. "Черный TC1N").
+        if re.search(r"[a-zа-яіїє]",next_raw,re.I) and re.search(r"\d",next_raw):continue
         # Numbers carrying an explicit dimension marker are sizes, not product generations.
         if '"' in next_raw:continue
         if i+2<len(words) and re.sub(r"[^a-zа-яіїє]","",words[i+2],flags=re.I) in units:continue
