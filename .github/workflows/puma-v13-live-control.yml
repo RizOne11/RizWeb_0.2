@@ -19,6 +19,25 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
+      - name: Diagnose Epicentr live price payload
+        run: |
+          python - <<'PY'
+          import re,httpx,json
+          from puma_scouts.scouts.epicentr import _extract_embedded_price,_jsonld_products,_meta
+          u='https://epicentrk.ua/shop/smartfon-samsung-galaxy-a55-5g-8-256gb-light-violet-sm-a556blvceuc.html'
+          h={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128 Safari/537.36','Accept-Language':'uk-UA,uk;q=0.9,ru;q=0.7,en;q=0.5'}
+          r=httpx.get(u,headers=h,follow_redirects=True,timeout=20); text=r.text
+          products=_jsonld_products(text)
+          offers=[]
+          for p in products:
+            o=p.get('offers'); offers.extend(o if isinstance(o,list) else [o] if isinstance(o,dict) else [])
+          markers={k:(k in text) for k in ['17 999','17999','product:price:amount','itemprop="price"','data-price','currentPrice','finalPrice','priceValue','productPrice','salePrice','actualPrice']}
+          snippets=[]
+          for needle in ['17999','17 999','price','₴','грн']:
+            m=re.search(re.escape(needle),text,re.I)
+            if m: snippets.append(re.sub(r'\s+',' ',text[max(0,m.start()-180):m.end()+220])[:500])
+          print('EPICENTR_PRICE_DIAG='+json.dumps({'status':r.status_code,'bytes':len(text),'final_url':str(r.url),'og_price':_meta(text,'product:price:amount') or _meta(text,'og:price:amount'),'embedded':str(_extract_embedded_price(text)) if _extract_embedded_price(text) else None,'jsonld_offers':offers[:3],'markers':markers,'snippets':snippets},ensure_ascii=False),flush=True)
+          PY
       - name: Trace Xiaomi discovery and validation
         run: |
           python - <<'PY'
@@ -31,15 +50,11 @@ jobs:
             for scout in scouts(['prom','epicentr','hotline','web_shops']):
               t=time.monotonic()
               try:
-                report=await scout.scan(m)
-                offers=[]
+                report=await scout.scan(m);offers=[]
                 for v in report.offers:
-                  o=v.offer
-                  offers.append({'verdict':v.verdict.value,'score':round(v.score,3),'price':float(o.price) if o.price is not None else None,'title':o.title,'url':str(o.url),'positive':v.positive_evidence,'conflicts':v.conflicts,'rejection':v.rejection_reasons})
-                total+=len(offers)
-                print('PUMA_TRACE_'+scout.marketplace.value.upper()+'='+json.dumps({'seconds':round(time.monotonic()-t,2),'health':report.health.value,'offers':offers},ensure_ascii=False),flush=True)
-              except Exception as e:
-                print('PUMA_TRACE_'+scout.marketplace.value.upper()+'='+json.dumps({'seconds':round(time.monotonic()-t,2),'error':type(e).__name__+': '+str(e)},ensure_ascii=False),flush=True)
+                  o=v.offer;offers.append({'verdict':v.verdict.value,'score':round(v.score,3),'price':float(o.price) if o.price is not None else None,'title':o.title,'url':str(o.url),'positive':v.positive_evidence,'conflicts':v.conflicts,'rejection':v.rejection_reasons})
+                total+=len(offers);print('PUMA_TRACE_'+scout.marketplace.value.upper()+'='+json.dumps({'seconds':round(time.monotonic()-t,2),'health':report.health.value,'offers':offers},ensure_ascii=False),flush=True)
+              except Exception as e:print('PUMA_TRACE_'+scout.marketplace.value.upper()+'='+json.dumps({'seconds':round(time.monotonic()-t,2),'error':type(e).__name__+': '+str(e)},ensure_ascii=False),flush=True)
             print('PUMA_TRACE_TOTAL_VALIDATED='+str(total))
           asyncio.run(main())
           PY
