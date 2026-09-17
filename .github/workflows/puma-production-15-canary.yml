@@ -1,4 +1,4 @@
-name: PUMA Production 15 Canary
+name: PUMA Production 15 Canary v2
 
 on:
   push:
@@ -85,14 +85,20 @@ jobs:
               'confirmed':s.get('confirmed'),
               'probable':s.get('probable'),
           },ensure_ascii=False))
-          timeouts=0
+          hard_timeouts=0
+          recovered_soft=0
           for p in products:
               diag=p.get('diagnostics') or {}
               product_timeouts=sum(
                   1 for src in diag.values()
-                  if any('wall_timeout' in str(e) for e in (src.get('errors') or []))
+                  if any(('hard_timeout' in str(e) or 'wall_timeout' in str(e)) for e in (src.get('errors') or []))
               )
-              timeouts+=product_timeouts
+              product_recovered=sum(
+                  1 for src in diag.values()
+                  if any('soft_timeout_' in str(e) and '_recovered' in str(e) for e in (src.get('errors') or []))
+              )
+              hard_timeouts+=product_timeouts
+              recovered_soft+=product_recovered
               print('PUMA_15_PRODUCT='+json.dumps({
                   'article':p.get('article'),
                   'name':p.get('name'),
@@ -106,10 +112,12 @@ jobs:
                   'source_queries':{k:v.get('queries') for k,v in diag.items()},
                   'source_pages':{k:v.get('pages') for k,v in diag.items()},
                   'source_accepted':{k:v.get('accepted') for k,v in diag.items()},
-                  'wall_timeouts':product_timeouts,
+                  'hard_timeouts':product_timeouts,
+                  'soft_recovered':product_recovered,
                   'offers_detail':[{k:o.get(k) for k in ('source','price','found_title','url','identity_confidence','match')} for o in p.get('offers_detail',[])],
               },ensure_ascii=False))
-          print('PUMA_15_WALL_TIMEOUTS='+str(timeouts))
+          print('PUMA_15_HARD_TIMEOUTS='+str(hard_timeouts))
+          print('PUMA_15_SOFT_RECOVERED='+str(recovered_soft))
           PY
 
           curl -fsS "$BASE/jobs/$jid/xlsx" -o result.xlsx
