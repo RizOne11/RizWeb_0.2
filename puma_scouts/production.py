@@ -74,7 +74,6 @@ async def scan(mission:ProductMission,selected:list[str]|None=None)->list[dict[s
     for scout,report in results:
         if report is None:continue
         for item in report.offers:
-            # Only identities accepted by the validator enter market-price aggregation.
             if item.verdict!=Verdict.PASS or item.identity_confidence not in {None,IdentityConfidence.CONFIRMED,IdentityConfidence.PROBABLE}:continue
             o=item.offer;rows.append({"article":mission.article,"name":mission.source_data.get("name",""),"brand":mission.source_data.get("brand",""),"model":mission.source_data.get("model",""),"source":scout.marketplace.value,"price":float(o.price) if o.price is not None else None,"currency":o.currency,"availability":o.availability or "","found_title":o.title,"url":str(o.url),"match":round(item.score,3),"identity_confidence":item.identity_confidence.value if item.identity_confidence else "LEGACY_PASS","domain":o.attributes.get("source_domain","") or str(o.url).split('/')[2],"health":report.health.value})
     dedup={}
@@ -87,9 +86,10 @@ async def scan(mission:ProductMission,selected:list[str]|None=None)->list[dict[s
     return list(dedup.values())
 def save(rows:list[dict[str,Any]],output:str)->None:
     wb=Workbook();ws=wb.active;ws.title="Offers";keys=("article","name","brand","model","source","price","currency","availability","found_title","url","match","identity_confidence","domain","health");ws.append(["Артикул","Назва","Бренд","Модель","Джерело","Ціна","Валюта","Наявність","Знайдена назва","URL","Match","Identity Confidence","Домен","Health"])
-    for x in rows:ws.append([x[k] for k in keys])
+    defaults={"identity_confidence":"LEGACY_PASS","domain":"","health":""}
+    for x in rows:ws.append([x.get(k,defaults.get(k,"")) for k in keys])
     ws.freeze_panes="A2";ws.auto_filter.ref=ws.dimensions
-    summary=wb.create_sheet("Price summary");summary.append(["Артикул","Назва","Джерело","Ціна","Карток"]);groups=Counter((x["article"],x["name"],x["source"],x["price"]) for x in rows if x["price"] is not None)
+    summary=wb.create_sheet("Price summary");summary.append(["Артикул","Назва","Джерело","Ціна","Карток"]);groups=Counter((x["article"],x["name"],x["source"],x["price"]) for x in rows if x.get("price") is not None)
     for key,count in sorted(groups.items(),key=lambda z:(z[0][0],z[0][2],z[0][3])):summary.append([*key,count])
     summary.freeze_panes="A2";summary.auto_filter.ref=summary.dimensions;wb.save(output)
 async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[str]|None=None,progress_cb:Callable|None=None)->dict[str,Any]:
@@ -106,6 +106,6 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
     for found in await asyncio.gather(*[one(m) for m in missions]):rows.extend(found)
     save(rows,output_path)
     if progress_cb:progress_cb(len(missions),len(missions),"Готово","Формуємо звіт…")
-    found_articles={x['article'] for x in rows};confidence=Counter(x['identity_confidence'] for x in rows)
+    found_articles={x['article'] for x in rows};confidence=Counter(x.get('identity_confidence','LEGACY_PASS') for x in rows)
     return {"products":len(missions),"offers":len(rows),"found_products":len(found_articles),"found_pct":round(len(found_articles)/max(1,len(missions))*100,1),"sources":len({x['source'] for x in rows}),"confirmed":confidence.get("CONFIRMED",0),"probable":confidence.get("PROBABLE",0)}
 def run_sync(input_path:str,output_path:str,**kwargs):return asyncio.run(run(input_path,output_path,**kwargs))
