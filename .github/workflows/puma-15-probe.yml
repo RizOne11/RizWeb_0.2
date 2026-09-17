@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: Reuse active durable rerun and print id
+      - name: Print active 15-product job status
         run: |
           set -euo pipefail
-          curl -fsS -X POST 'https://rizweb-0-2.onrender.com/api/jobs/8a33eb4ada73/rerun'
+          curl -fsS 'https://rizweb-0-2.onrender.com/api/jobs/1e49b597ea07'
