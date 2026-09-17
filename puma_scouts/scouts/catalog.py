@@ -16,149 +16,303 @@ from puma_scouts.query import generate_queries
 from puma_scouts.scouts.base import MarketplaceScout
 from puma_scouts.validator import validate_offer
 
-def _clean(value: Any) -> str:return re.sub(r"\s+", " ", html_lib.unescape(str(value or ""))).strip()
+
+def _clean(value: Any) -> str:
+    return re.sub(r"\s+", " ", html_lib.unescape(str(value or ""))).strip()
+
+
 def _price(value: Any) -> Decimal | None:
-    text=_clean(value).replace("\u00a0","").replace(" ","").replace(",",".");text=re.sub(r"[^0-9.]","",text)
-    try:result=Decimal(text);return result if result>0 else None
-    except (InvalidOperation,ValueError):return None
-def _canonical(url:str)->str:p=urlsplit(url);return urlunsplit(("https",p.netloc.lower(),p.path,"",""))
-def _jsonld_products(page:str)->list[dict[str,Any]]:
-    soup=BeautifulSoup(page,"html.parser");found=[]
-    for tag in soup.find_all("script",attrs={"type":"application/ld+json"}):
-        try:payload=json.loads(tag.string or tag.get_text() or "")
-        except (json.JSONDecodeError,TypeError):continue
-        queue=payload if isinstance(payload,list) else [payload]
+    text = _clean(value).replace("\u00a0", "").replace(" ", "").replace(",", ".")
+    text = re.sub(r"[^0-9.]", "", text)
+    try:
+        result = Decimal(text)
+        return result if result > 0 else None
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _canonical(url: str) -> str:
+    p = urlsplit(url)
+    return urlunsplit(("https", p.netloc.lower(), p.path, "", ""))
+
+
+def _jsonld_products(page: str) -> list[dict[str, Any]]:
+    soup = BeautifulSoup(page, "html.parser")
+    found = []
+    for tag in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        try:
+            payload = json.loads(tag.string or tag.get_text() or "")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        queue = payload if isinstance(payload, list) else [payload]
         for item in queue:
-            if not isinstance(item,dict):continue
-            if str(item.get("@type","")).casefold()=="product":found.append(item)
-            graph=item.get("@graph")
-            if isinstance(graph,list):found.extend(x for x in graph if isinstance(x,dict) and str(x.get("@type","")).casefold()=="product")
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("@type", "")).casefold() == "product":
+                found.append(item)
+            graph = item.get("@graph")
+            if isinstance(graph, list):
+                found.extend(
+                    x for x in graph
+                    if isinstance(x, dict) and str(x.get("@type", "")).casefold() == "product"
+                )
     return found
 
+
 class CatalogScout(MarketplaceScout):
-    marketplace:Marketplace;host:str;search_templates:tuple[str,...];product_path_hints:tuple[str,...]=();allow_subdomains=False
-    def __init__(self,*,timeout:float=15.0,max_candidates_per_query:int=20)->None:
-        self.timeout=timeout;self.max_candidates_per_query=max_candidates_per_query;self.headers={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128 Safari/537.36","Accept-Language":"uk-UA,uk;q=0.9,ru;q=0.7,en;q=0.5"}
-    async def generate_queries(self,mission:ProductMission)->list[str]:
-        article=mission.article.casefold().strip();useful=[]
+    marketplace: Marketplace
+    host: str
+    search_templates: tuple[str, ...]
+    product_path_hints: tuple[str, ...] = ()
+    allow_subdomains = False
+
+    def __init__(self, *, timeout: float = 15.0, max_candidates_per_query: int = 20) -> None:
+        self.timeout = timeout
+        self.max_candidates_per_query = max_candidates_per_query
+        self.headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128 Safari/537.36",
+            "Accept-Language": "uk-UA,uk;q=0.9,ru;q=0.7,en;q=0.5",
+        }
+
+    async def generate_queries(self, mission: ProductMission) -> list[str]:
+        article = mission.article.casefold().strip()
+        useful = []
         for query in generate_queries(mission):
-            q=query.strip()
-            if not q or q.casefold()==article or (article and article in q.casefold()):continue
-            if re.fullmatch(r"(?:19|20)\d{2}",q):continue
-            if q not in useful:useful.append(q)
+            q = query.strip()
+            if not q or q.casefold() == article or (article and article in q.casefold()):
+                continue
+            if re.fullmatch(r"(?:19|20)\d{2}", q):
+                continue
+            if q not in useful:
+                useful.append(q)
         return useful
-    def _host_matches(self,candidate_host:str)->bool:
-        expected=self.host.casefold().removeprefix("www.");actual=candidate_host.casefold().removeprefix("www.");return actual==expected or (self.allow_subdomains and actual.endswith("."+expected))
-    def _is_candidate(self,url:str)->bool:
-        p=urlsplit(url)
-        if not self._host_matches(p.netloc) or not p.path or p.path=="/":return False
-        if self.product_path_hints and not any(h in p.path.casefold() for h in self.product_path_hints):return False
+
+    def _host_matches(self, candidate_host: str) -> bool:
+        expected = self.host.casefold().removeprefix("www.")
+        actual = candidate_host.casefold().removeprefix("www.")
+        return actual == expected or (self.allow_subdomains and actual.endswith("." + expected))
+
+    def _is_candidate(self, url: str) -> bool:
+        p = urlsplit(url)
+        if not self._host_matches(p.netloc) or not p.path or p.path == "/":
+            return False
+        if self.product_path_hints and not any(h in p.path.casefold() for h in self.product_path_hints):
+            return False
         return True
-    async def _get(self,client:httpx.AsyncClient,url:str)->str:
-        r=await client.get(url,headers=self.headers,follow_redirects=True);r.raise_for_status();return r.text
-    def _extract_candidate_links(self,page:str,base_url:str)->list[str]:
-        found={};soup=BeautifulSoup(page,"html.parser")
-        for tag in soup.find_all("a",href=True):
-            absolute=urljoin(base_url,tag["href"])
-            if self._is_candidate(absolute):found.setdefault(_canonical(absolute),None)
-        decoded=html_lib.unescape(page).replace("\\/","/")
-        for raw in re.findall(r'https?://[^"\'<>\\\s]+|/(?:ua|uk|ru)?/?[^"\'<>\\\s]{4,}\.html(?:\?[^"\'<>\\\s]*)?',decoded,flags=re.I):
-            absolute=urljoin(base_url,raw.rstrip(".,);]"))
-            if self._is_candidate(absolute):found.setdefault(_canonical(absolute),None)
-            if len(found)>=self.max_candidates_per_query:break
-        return list(found)[:self.max_candidates_per_query]
-    def _extract_external_links(self,page:str,base_url:str)->list[str]:
-        found={};soup=BeautifulSoup(page,"html.parser")
-        for tag in soup.find_all("a",href=True):
-            absolute=urljoin(base_url,html_lib.unescape(tag["href"]));parsed=urlsplit(absolute)
+
+    async def _get(self, client: httpx.AsyncClient, url: str) -> str:
+        r = await client.get(url, headers=self.headers, follow_redirects=True)
+        r.raise_for_status()
+        return r.text
+
+    def _extract_candidate_links(self, page: str, base_url: str) -> list[str]:
+        found = {}
+        soup = BeautifulSoup(page, "html.parser")
+        for tag in soup.find_all("a", href=True):
+            absolute = urljoin(base_url, tag["href"])
+            if self._is_candidate(absolute):
+                found.setdefault(_canonical(absolute), None)
+        decoded = html_lib.unescape(page).replace("\\/", "/")
+        for raw in re.findall(r'https?://[^"\'<>\\\s]+|/(?:ua|uk|ru)?/?[^"\'<>\\\s]{4,}\.html(?:\?[^"\'<>\\\s]*)?', decoded, flags=re.I):
+            absolute = urljoin(base_url, raw.rstrip(".,);]"))
+            if self._is_candidate(absolute):
+                found.setdefault(_canonical(absolute), None)
+            if len(found) >= self.max_candidates_per_query:
+                break
+        return list(found)[: self.max_candidates_per_query]
+
+    def _extract_external_links(self, page: str, base_url: str) -> list[str]:
+        found = {}
+        soup = BeautifulSoup(page, "html.parser")
+        for tag in soup.find_all("a", href=True):
+            absolute = urljoin(base_url, html_lib.unescape(tag["href"]))
+            parsed = urlsplit(absolute)
             if "duckduckgo.com" in parsed.netloc and parsed.path.startswith("/l/"):
-                wrapped=parse_qs(parsed.query).get("uddg",[])
-                if wrapped:absolute=unquote(wrapped[0])
-            if self._is_candidate(absolute):found.setdefault(_canonical(absolute),None)
-        decoded=html_lib.unescape(page).replace("\\/","/")
-        for raw in re.findall(r'https?://[^"\'<>\\\s]+',decoded,flags=re.I):
-            absolute=raw.rstrip(".,);]")
-            if self._is_candidate(absolute):found.setdefault(_canonical(absolute),None)
-            if len(found)>=self.max_candidates_per_query:break
-        return list(found)[:self.max_candidates_per_query]
-    async def _native_candidate_urls(self,client:httpx.AsyncClient,query:str)->list[str]:
-        found={}
-        for template in self.search_templates:
-            search_url=template.format(q=quote_plus(query))
-            try:page=await self._get(client,search_url)
-            except httpx.HTTPError:continue
-            for url in self._extract_candidate_links(page,search_url):
-                found.setdefault(url,None)
-                if len(found)>=self.max_candidates_per_query:return list(found)
+                wrapped = parse_qs(parsed.query).get("uddg", [])
+                if wrapped:
+                    absolute = unquote(wrapped[0])
+            if self._is_candidate(absolute):
+                found.setdefault(_canonical(absolute), None)
+        decoded = html_lib.unescape(page).replace("\\/", "/")
+        for raw in re.findall(r'https?://[^"\'<>\\\s]+', decoded, flags=re.I):
+            absolute = raw.rstrip(".,);]")
+            if self._is_candidate(absolute):
+                found.setdefault(_canonical(absolute), None)
+            if len(found) >= self.max_candidates_per_query:
+                break
+        return list(found)[: self.max_candidates_per_query]
+
+    async def _native_candidate_urls(self, client: httpx.AsyncClient, query: str) -> list[str]:
+        urls = [template.format(q=quote_plus(query)) for template in self.search_templates]
+        pages = await asyncio.gather(*(self._get(client, url) for url in urls), return_exceptions=True)
+        found = {}
+        for search_url, page in zip(urls, pages):
+            if isinstance(page, Exception):
+                continue
+            for url in self._extract_candidate_links(page, search_url):
+                found.setdefault(url, None)
+                if len(found) >= self.max_candidates_per_query:
+                    return list(found)
         return list(found)
-    async def _external_candidate_urls(self,client:httpx.AsyncClient,query:str)->list[str]:
-        site_query=f'site:{self.host} {query}';found={}
-        for search_url in (f"https://html.duckduckgo.com/html/?q={quote_plus(site_query)}",f"https://www.bing.com/search?q={quote_plus(site_query)}&count=20&setlang=uk",f"https://search.brave.com/search?q={quote_plus(site_query)}&source=web"):
-            try:page=await self._get(client,search_url)
-            except httpx.HTTPError:continue
-            for url in self._extract_external_links(page,search_url):
-                found.setdefault(url,None)
-                if len(found)>=self.max_candidates_per_query:return list(found)
+
+    async def _external_candidate_urls(self, client: httpx.AsyncClient, query: str) -> list[str]:
+        site_query = f"site:{self.host} {query}"
+        urls = [
+            f"https://html.duckduckgo.com/html/?q={quote_plus(site_query)}",
+            f"https://www.bing.com/search?q={quote_plus(site_query)}&count=20&setlang=uk",
+            f"https://search.brave.com/search?q={quote_plus(site_query)}&source=web",
+        ]
+        pages = await asyncio.gather(*(self._get(client, url) for url in urls), return_exceptions=True)
+        found = {}
+        for search_url, page in zip(urls, pages):
+            if isinstance(page, Exception):
+                continue
+            for url in self._extract_external_links(page, search_url):
+                found.setdefault(url, None)
+                if len(found) >= self.max_candidates_per_query:
+                    return list(found)
         return list(found)
-    def _offer(self,mission:ProductMission,url:str,page:str,query:str,method:str)->Offer|None:
-        products=_jsonld_products(page)
-        if not products:return None
-        product=products[0];title=_clean(product.get("name"))
-        if not title:return None
-        attrs={"source":f"{self.marketplace.value}-jsonld","discovery_stage":method}
-        for key in ("sku","mpn","gtin","gtin13","model"):
-            if product.get(key):attrs[key]=product[key]
-        brand=product.get("brand")
-        if isinstance(brand,dict):attrs["brand"]=brand.get("name")
-        elif brand:attrs["brand"]=brand
-        offers=product.get("offers");offers=offers[0] if isinstance(offers,list) and offers else offers;amount=availability=seller=None
-        if isinstance(offers,dict):
-            amount=_price(offers.get("price") or offers.get("lowPrice"));availability=_clean(offers.get("availability")) or None;raw_seller=offers.get("seller")
-            if isinstance(raw_seller,dict):seller=_clean(raw_seller.get("name")) or None
-        return Offer(article=mission.article,marketplace=self.marketplace,marketplace_product_id=_clean(product.get("sku")) or None,seller_name=seller,title=title,price=amount,availability=availability,url=_canonical(url),image_urls=[],attributes=attrs,query_used=query,discovery_method=f"{self.marketplace.value}-{method}->jsonld")
-    async def _fetch_offers(self,client:httpx.AsyncClient,mission:ProductMission,query:str,urls:list[str],method:str)->list[Offer]:
-        async def fetch_one(url):
-            try:return self._offer(mission,url,await self._get(client,url),query,method)
-            except httpx.HTTPError:return None
-        fetched=await asyncio.gather(*(fetch_one(url) for url in urls));return [o for o in fetched if o]
-    async def discover(self,mission:ProductMission,query:str)->list[Offer]:
+
+    def _offer(self, mission: ProductMission, url: str, page: str, query: str, method: str) -> Offer | None:
+        products = _jsonld_products(page)
+        if not products:
+            return None
+        product = products[0]
+        title = _clean(product.get("name"))
+        if not title:
+            return None
+        attrs = {"source": f"{self.marketplace.value}-jsonld", "discovery_stage": method}
+        for key in ("sku", "mpn", "gtin", "gtin13", "model"):
+            if product.get(key):
+                attrs[key] = product[key]
+        brand = product.get("brand")
+        if isinstance(brand, dict):
+            attrs["brand"] = brand.get("name")
+        elif brand:
+            attrs["brand"] = brand
+        offers = product.get("offers")
+        offers = offers[0] if isinstance(offers, list) and offers else offers
+        amount = availability = seller = None
+        if isinstance(offers, dict):
+            amount = _price(offers.get("price") or offers.get("lowPrice"))
+            availability = _clean(offers.get("availability")) or None
+            raw_seller = offers.get("seller")
+            if isinstance(raw_seller, dict):
+                seller = _clean(raw_seller.get("name")) or None
+        return Offer(
+            article=mission.article,
+            marketplace=self.marketplace,
+            marketplace_product_id=_clean(product.get("sku")) or None,
+            seller_name=seller,
+            title=title,
+            price=amount,
+            availability=availability,
+            url=_canonical(url),
+            image_urls=[],
+            attributes=attrs,
+            query_used=query,
+            discovery_method=f"{self.marketplace.value}-{method}->jsonld",
+        )
+
+    async def _fetch_offers(self, client: httpx.AsyncClient, mission: ProductMission, query: str, urls: list[str], method: str) -> list[Offer]:
+        async def fetch_one(url: str):
+            try:
+                return self._offer(mission, url, await self._get(client, url), query, method)
+            except Exception:
+                return None
+        fetched = await asyncio.gather(*(fetch_one(url) for url in urls))
+        return [o for o in fetched if o]
+
+    async def _discover_stage(self, client: httpx.AsyncClient, mission: ProductMission, query: str, method: str) -> tuple[int, list[Offer]]:
+        if method == "native":
+            urls = await self._native_candidate_urls(client, query)
+        else:
+            urls = await self._external_candidate_urls(client, query)
+        offers = await self._fetch_offers(client, mission, query, urls, method)
+        return len(urls), offers
+
+    async def discover(self, mission: ProductMission, query: str) -> list[Offer]:
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            urls=await self._native_candidate_urls(client,query)
-            offers=await self._fetch_offers(client,mission,query,urls,"native")
-            if offers:return offers
-            fallback_urls=await self._external_candidate_urls(client,query)
-            return await self._fetch_offers(client,mission,query,fallback_urls,"external")
-    async def scan(self,mission:ProductMission)->ScanReport:
-        queries=(await self.generate_queries(mission))[:4]
-        unique={};errors=[];seen=0
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            # Stage 1: native marketplace search first. This is the stable path and must never be displaced by web fallback.
-            for q in queries:
-                try:urls=await self._native_candidate_urls(client,q)
-                except Exception as exc:errors.append(f"native {q!r}: {type(exc).__name__}: {exc}");continue
-                seen+=len(urls)
-                for offer in await self._fetch_offers(client,mission,q,urls,"native"):
-                    unique.setdefault(str(offer.url),offer)
-                if len(unique)>=self.max_candidates_per_query:break
-            validated=[validate_offer(mission,o) for o in unique.values()]
-            passes=[x for x in validated if x.verdict==Verdict.PASS]
-            # Stage 2: only if native search produced no accepted product, use a bounded free web fallback.
-            if not passes:
-                for q in queries[:2]:
-                    try:urls=await self._external_candidate_urls(client,q)
-                    except Exception as exc:errors.append(f"external {q!r}: {type(exc).__name__}: {exc}");continue
-                    seen+=len(urls)
-                    for offer in await self._fetch_offers(client,mission,q,urls,"external"):
-                        unique.setdefault(str(offer.url),offer)
-                    validated=[validate_offer(mission,o) for o in unique.values()]
-                    passes=[x for x in validated if x.verdict==Verdict.PASS]
-                    if passes:break
-        validated=[validate_offer(mission,o) for o in unique.values()]
-        passes=[x for x in validated if x.verdict==Verdict.PASS];conflicts=[x for x in validated if x.verdict==Verdict.CONFLICT]
-        health=ScanHealth.FOUND if passes and not errors else ScanHealth.PARTIAL if passes or conflicts else ScanHealth.ACCESS_LIMITED if errors and not validated else ScanHealth.NOT_FOUND
-        return ScanReport(article=mission.article,marketplace=self.marketplace,health=health,queries_generated=len(queries),pages_scanned=len(unique),candidates_seen=seen,candidates_collected=len(unique),duplicates_removed=max(0,seen-len(unique)),search_rounds=len(queries),errors=errors,offers=validated)
+            _, offers = await self._discover_stage(client, mission, query, "native")
+            if offers:
+                return offers
+            _, fallback = await self._discover_stage(client, mission, query, "external")
+            return fallback
+
+    async def scan(self, mission: ProductMission) -> ScanReport:
+        queries = (await self.generate_queries(mission))[:4]
+        unique: dict[str, Offer] = {}
+        errors: list[str] = []
+        seen = 0
+
+        async with httpx.AsyncClient(timeout=self.timeout, limits=httpx.Limits(max_connections=30, max_keepalive_connections=15)) as client:
+            native_results = await asyncio.gather(
+                *(self._discover_stage(client, mission, q, "native") for q in queries),
+                return_exceptions=True,
+            )
+            for q, result in zip(queries, native_results):
+                if isinstance(result, Exception):
+                    errors.append(f"native {q!r}: {type(result).__name__}: {result}")
+                    continue
+                count, offers = result
+                seen += count
+                for offer in offers:
+                    unique.setdefault(str(offer.url), offer)
+
+            validated = [validate_offer(mission, o) for o in unique.values()]
+            passes = [x for x in validated if x.verdict == Verdict.PASS]
+
+            if not passes and queries:
+                fallback_queries = queries[:2]
+                external_results = await asyncio.gather(
+                    *(self._discover_stage(client, mission, q, "external") for q in fallback_queries),
+                    return_exceptions=True,
+                )
+                for q, result in zip(fallback_queries, external_results):
+                    if isinstance(result, Exception):
+                        errors.append(f"external {q!r}: {type(result).__name__}: {result}")
+                        continue
+                    count, offers = result
+                    seen += count
+                    for offer in offers:
+                        unique.setdefault(str(offer.url), offer)
+
+        validated = [validate_offer(mission, o) for o in unique.values()]
+        passes = [x for x in validated if x.verdict == Verdict.PASS]
+        conflicts = [x for x in validated if x.verdict == Verdict.CONFLICT]
+        health = (
+            ScanHealth.FOUND if passes and not errors
+            else ScanHealth.PARTIAL if passes or conflicts
+            else ScanHealth.ACCESS_LIMITED if errors and not validated
+            else ScanHealth.NOT_FOUND
+        )
+        return ScanReport(
+            article=mission.article,
+            marketplace=self.marketplace,
+            health=health,
+            queries_generated=len(queries),
+            pages_scanned=len(unique),
+            candidates_seen=seen,
+            candidates_collected=len(unique),
+            duplicates_removed=max(0, seen - len(unique)),
+            search_rounds=len(queries),
+            errors=errors,
+            offers=validated,
+        )
+
 
 class PromScout(CatalogScout):
-    marketplace=Marketplace.PROM;host="prom.ua";allow_subdomains=True;product_path_hints=("/p","/m");search_templates=("https://prom.ua/ua/search?search_term={q}","https://prom.ua/ua/search?search_term={q}&sort=score")
+    marketplace = Marketplace.PROM
+    host = "prom.ua"
+    allow_subdomains = True
+    product_path_hints = ("/p", "/m")
+    search_templates = (
+        "https://prom.ua/ua/search?search_term={q}",
+        "https://prom.ua/ua/search?search_term={q}&sort=score",
+    )
+
+
 class HotlineScout(CatalogScout):
-    marketplace=Marketplace.HOTLINE;host="hotline.ua";search_templates=("https://hotline.ua/ua/sr/?q={q}",)
+    marketplace = Marketplace.HOTLINE
+    host = "hotline.ua"
+    search_templates = ("https://hotline.ua/ua/sr/?q={q}",)
