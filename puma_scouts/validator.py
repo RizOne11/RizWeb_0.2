@@ -86,7 +86,7 @@ def _brand_conflict(expected: str | None, offer_text: str) -> str | None:
     if idx <= 0:
         return None
     descriptor = re.compile(
-        r"^(?:смартфон|телефон|монітор|монитор|навуш|науш|headphone|earbud|ноутбук|laptop|планшет|tablet|телевіз|телевиз|tv|ssd|hdd|шин|tire|tyre|парф|бездротов|беспровод|wireless|вкладиш|вкладыш|оригінал|оригинал|новий|новый|new|ваг|вес)",
+        r"^(?:смартфон|телефон|монітор|монитор|навуш|науш|headphone|earbud|ноутбук|laptop|планшет|tablet|телевіз|телевиз|tv|ssd|hdd|шин|tire|tyre|парф|бездротов|беспровод|wireless|вкладиш|вкладыш|оригінал|оригинал|новий|новый|new|ваг|вес|молоток|hammer|бокоріз|бокорез|плоскогуб|пассатиж|кусач|кліщ|клещ|викрутк|отвертк|ключ|ящик|набір|набор|генератор|обігрівач|обогреватель)",
         re.I,
     )
     prefix = [w for w in words[:idx] if len(w) >= 3 and not descriptor.match(w) and not w.isdigit()]
