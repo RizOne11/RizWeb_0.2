@@ -1,0 +1,36 @@
+name: PUMA fetch job 8a33eb4ada73
+
+on:
+  push:
+    branches: [durability-verify]
+    paths:
+      - '.github/workflows/puma-fetch-job-8a33eb4ada73.yml'
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fetch live job and reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE='https://rizweb-0-2.onrender.com'
+          JID='8a33eb4ada73'
+          curl -fsS "$BASE/api/jobs/$JID" -o status.json
+          cat status.json
+          python -c 'import json; d=json.load(open("status.json",encoding="utf-8")); assert d.get("status")=="done", d'
+          curl -fsS "$BASE/jobs/$JID/xlsx" -o market.xlsx
+          curl -fsS "$BASE/jobs/$JID/classic-xlsx" -o classic.xlsx
+          test -s market.xlsx
+          test -s classic.xlsx
+          sha256sum market.xlsx classic.xlsx
+      - name: Upload fetched job artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-8a33eb4ada73
+          path: |
+            status.json
+            market.xlsx
+            classic.xlsx
+          if-no-files-found: error
