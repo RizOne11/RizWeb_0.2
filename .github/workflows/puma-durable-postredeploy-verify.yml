@@ -1,0 +1,31 @@
+name: PUMA durable post-redeploy verify
+
+on:
+  push:
+    branches: [durability-verify]
+    paths:
+      - '.github/workflows/puma-durable-postredeploy-verify.yml'
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify persisted job and reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE='https://rizweb-0-2.onrender.com'
+          JID='28ce4d322310'
+          curl -fsS "$BASE/api/jobs/$JID" -o status.json
+          cat status.json
+          test "$(python -c 'import json; print(json.load(open("status.json",encoding="utf-8")).get("status",""))')" = done
+          curl -fsS "$BASE/jobs/$JID/xlsx" -o market.xlsx
+          curl -fsS "$BASE/jobs/$JID/classic-xlsx" -o classic.xlsx
+          test -s market.xlsx
+          test -s classic.xlsx
+          echo "MARKET_XLSX_BYTES=$(stat -c%s market.xlsx)"
+          echo "CLASSIC_XLSX_BYTES=$(stat -c%s classic.xlsx)"
+          sha256sum market.xlsx classic.xlsx
+          test "$(sha256sum market.xlsx | awk '{print $1}')" = 'a0377e316e80b2bbd85a5d2cdedb7e02b3e9eb0d48127bbf9339622b566c119c'
+          test "$(sha256sum classic.xlsx | awk '{print $1}')" = '29b5a409ae194e24293f494cc6bcf350a01fca4c8288fdf503fdca21dce22a94'
