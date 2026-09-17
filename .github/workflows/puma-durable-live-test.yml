@@ -19,15 +19,7 @@ jobs:
           for i in $(seq 1 90); do
             body="$(curl -fsS "$BASE/api/storage" || true)"
             echo "storage=$body"
-            if python - <<'PY' "$body"
-import json, sys
-try:
-    d=json.loads(sys.argv[1])
-    raise SystemExit(0 if d.get('mode')=='s3' and d.get('durable') is True else 1)
-except Exception:
-    raise SystemExit(1)
-PY
-            then
+            if python -c 'import json,sys; d=json.loads(sys.argv[1]); raise SystemExit(0 if d.get("mode")=="s3" and d.get("durable") is True else 1)' "$body" 2>/dev/null; then
               exit 0
             fi
             sleep 5
@@ -40,10 +32,9 @@ PY
         run: |
           set -euo pipefail
           BASE='https://rizweb-0-2.onrender.com'
-          cat > catalog.csv <<'CSV'
-          Код товара;Категория;Артикул;Название;Цена;Старая цена;Наличие;Производитель
-          002288;Мониторы;P27QCB-RA;Монитор Xiaomi Redmi A27Q 2025;9000;;1;Xiaomi
-          CSV
+          printf '%s\n' \
+            'Код товара;Категория;Артикул;Название;Цена;Старая цена;Наличие;Производитель' \
+            '002288;Мониторы;P27QCB-RA;Монитор Xiaomi Redmi A27Q 2025;9000;;1;Xiaomi' > catalog.csv
 
           curl -fsS -D headers.txt -o /dev/null \
             -F 'catalog=@catalog.csv;type=text/csv' \
@@ -61,15 +52,11 @@ PY
           test -n "$jid"
           echo "PUMA_DURABLE_JOB_ID=$jid"
 
+          status=''
           for i in $(seq 1 180); do
             curl -fsS "$BASE/api/jobs/$jid" -o status.json
             cat status.json
-            status="$(python - <<'PY'
-import json
-with open('status.json','r',encoding='utf-8') as f:
-    print(json.load(f).get('status',''))
-PY
-)"
+            status="$(python -c 'import json; print(json.load(open("status.json",encoding="utf-8")).get("status",""))')"
             if [ "$status" = done ]; then
               break
             fi
@@ -79,13 +66,7 @@ PY
             fi
             sleep 5
           done
-
-          test "$(python - <<'PY'
-import json
-with open('status.json','r',encoding='utf-8') as f:
-    print(json.load(f).get('status',''))
-PY
-)" = done
+          test "$status" = done
 
           curl -fsS "$BASE/jobs/$jid/xlsx" -o market.xlsx
           curl -fsS "$BASE/jobs/$jid/classic-xlsx" -o classic.xlsx
