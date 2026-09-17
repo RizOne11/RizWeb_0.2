@@ -2,7 +2,7 @@ name: PUMA Gold Regression
 
 on:
   push:
-    branches: [puma-gold-regression]
+    branches: [main, puma-gold-regression]
 
 jobs:
   gold-regression:
