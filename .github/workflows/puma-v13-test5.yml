@@ -7,7 +7,10 @@ on:
       - puma_scouts/validator.py
       - puma_scouts/variant_engine.py
       - puma_scouts/production.py
+      - puma_scouts/scouts/catalog.py
+      - puma_scouts/scouts/web_shops.py
       - tests/test_v13_contamination.py
+      - tests/test_v13_price_integrity.py
   workflow_dispatch:
 jobs:
   exact-five:
@@ -19,7 +22,7 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - name: Run exact five discovery and contamination smoke
+      - name: Run exact five discovery, identity and price integrity smoke
         run: |
           python - <<'PY'
           import asyncio, json, re, time
@@ -43,7 +46,7 @@ jobs:
                   'seconds':round(time.monotonic()-t,2),
                   'offers':len(rows),
                   'sources':sorted({r['source'] for r in rows}),
-                  'rows':[{'source':r['source'],'price':r['price'],'title':r['found_title'],'url':r['url'],'match':r['match']} for r in rows],
+                  'rows':[{'source':r['source'],'price':r['price'],'currency':r.get('currency'),'title':r['found_title'],'url':r['url'],'match':r['match']} for r in rows],
               }
 
           async def main():
@@ -59,6 +62,7 @@ jobs:
           print('PUMA_EXACT5_OFFERS='+str(total), flush=True)
 
           contamination=[]
+          price_integrity=[]
           for product in result:
               for row in product['rows']:
                   title=(row.get('title') or '').casefold()
@@ -66,10 +70,16 @@ jobs:
                       contamination.append({'article':product['article'],'reason':'HEADPHONE_ACCESSORY','title':row.get('title'),'url':row.get('url')})
                   if product['article']=='1724889898' and re.search(r'sunceramic|invita\s+ch[-\s]?t500', title, re.I):
                       contamination.append({'article':product['article'],'reason':'EMBY_IDENTITY_CONTAMINATION','title':row.get('title'),'url':row.get('url')})
+                  currency=(row.get('currency') or 'UAH').upper()
+                  if row.get('price') is not None and currency!='UAH':
+                      price_integrity.append({'article':product['article'],'reason':'FOREIGN_CURRENCY_IN_UAH_BASKET','currency':currency,'price':row.get('price'),'title':row.get('title'),'url':row.get('url')})
 
           print('PUMA_EXACT5_CONTAMINATION='+json.dumps(contamination,ensure_ascii=False), flush=True)
+          print('PUMA_EXACT5_PRICE_INTEGRITY='+json.dumps(price_integrity,ensure_ascii=False), flush=True)
           if found < 4:
               raise SystemExit('EXACT5_DISCOVERY_TOO_WEAK')
           if contamination:
               raise SystemExit('EXACT5_CONTAMINATION_DETECTED')
+          if price_integrity:
+              raise SystemExit('EXACT5_PRICE_INTEGRITY_FAILED')
           PY
