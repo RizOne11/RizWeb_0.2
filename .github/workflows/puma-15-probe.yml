@@ -1,0 +1,15 @@
+name: PUMA 15 Active Job Probe
+on:
+  push:
+    branches: [puma-15-rerun-compare]
+    paths:
+      - '.github/workflows/puma-15-probe.yml'
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Reuse active durable rerun and print id
+        run: |
+          set -euo pipefail
+          curl -fsS -X POST 'https://rizweb-0-2.onrender.com/api/jobs/8a33eb4ada73/rerun'
