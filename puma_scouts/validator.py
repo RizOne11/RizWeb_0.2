@@ -49,6 +49,31 @@ def _brand_match(expected:str|None,offer_text:str)->bool:
     return True if not expected else bool(_compact(expected) and _compact(expected) in _compact(offer_text))
 
 
+def _brand_conflict(expected:str|None,offer_text:str)->str|None:
+    """Reject a clearly different leading brand while preserving marketplace prose.
+
+    This is intentionally dictionary-free. It only fires when the mission has an
+    explicit brand, that brand is also present in the offer, and the offer starts
+    with another plausible brand token before it. Thus `Logitech ... Apple ...`
+    is contradictory, while descriptive prefixes such as `Навушники Apple ...`
+    do not invent a foreign-brand conflict.
+    """
+    if not expected:return None
+    n=_norm(offer_text);brand=_norm(expected)
+    if not brand or not re.search(rf"\b{re.escape(brand)}\b",n,re.I):return None
+    words=n.split();brand_words=brand.split()
+    try:
+        idx=next(i for i in range(len(words)) if words[i:i+len(brand_words)]==brand_words)
+    except StopIteration:
+        return None
+    if idx<=0:return None
+    generic={"смартфон","телефон","монітор","монитор","навушники","наушники","headphones","earbuds","ноутбук","laptop","планшет","tablet","телевізор","телевизор","tv","ssd","hdd","шина","шини","шины","tire","tyre","парфум","парфюм","оригінал","оригинал","новий","новый","new"}
+    prefix=[w for w in words[:idx] if len(w)>=3 and w not in generic and not w.isdigit()]
+    if len(prefix)==1 and re.fullmatch(r"[a-zа-яіїє][a-zа-яіїє0-9-]{2,24}",prefix[0],re.I):
+        return f"brand conflict: foreign leading brand {prefix[0]} before expected {expected}"
+    return None
+
+
 def _condition_conflict(src:str,off:str)->str|None:
     used=r"\b(?:вживан\w*|б\s*у|бу|used|refurbished|refurb|відновлен\w*|восстановлен\w*)\b"
     return "condition mismatch: used/refurbished offer" if re.search(used,_norm(off),re.I) and not re.search(used,_norm(src),re.I) else None
@@ -56,7 +81,6 @@ def _condition_conflict(src:str,off:str)->str|None:
 
 def _authenticity_conflict(src:str,off:str)->str|None:
     clone=r"\b(?:реплік\w*|реплик\w*|копі\w*|копи\w*|аналог\w*|clone|copy|airoha)\b"
-    # Generic rule: explicit clone language is a contradiction when source does not request a clone.
     return "authenticity mismatch: explicit replica/clone marker" if re.search(clone,_norm(off),re.I) and not re.search(clone,_norm(src),re.I) else None
 
 
@@ -95,7 +119,7 @@ def validate_offer(mission:ProductMission,offer:Offer)->ValidatedOffer:
     brand=_explicit(mission,{"brand","manufacturer","vendor"});bm=_brand_match(brand,offer_text)
     strong=bool(matched or mm)
     problems=[]
-    for p in (_authenticity_conflict(source_text,offer_text),_condition_conflict(source_text,offer_text),_quantity_conflict(source_text,offer_text,strong)):
+    for p in (_authenticity_conflict(source_text,offer_text),_condition_conflict(source_text,offer_text),_quantity_conflict(source_text,offer_text,strong),_brand_conflict(brand,offer_text)):
         if p:problems.append(p)
     problems.extend(variant_conflicts(source_text,offer_text))
     problems.extend(_year_refresh_conflicts(source_text,offer_text))
