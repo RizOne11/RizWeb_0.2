@@ -31,6 +31,23 @@ def _price(value: Any) -> Decimal | None:
         return None
 
 
+def _currency(value: Any) -> str:
+    text = _clean(value).upper().replace(".", "").strip()
+    aliases = {
+        "": "UAH",
+        "UAH": "UAH",
+        "ГРН": "UAH",
+        "₴": "UAH",
+        "HUA": "UAH",
+        "USD": "USD",
+        "$": "USD",
+        "US$": "USD",
+        "EUR": "EUR",
+        "€": "EUR",
+    }
+    return aliases.get(text, text or "UAH")
+
+
 def _canonical(url: str) -> str:
     p = urlsplit(url)
     return urlunsplit(("https", p.netloc.lower(), p.path, "", ""))
@@ -193,8 +210,10 @@ class CatalogScout(MarketplaceScout):
         offers = product.get("offers")
         offers = offers[0] if isinstance(offers, list) and offers else offers
         amount = availability = seller = None
+        currency = "UAH"
         if isinstance(offers, dict):
             amount = _price(offers.get("price") or offers.get("lowPrice"))
+            currency = _currency(offers.get("priceCurrency") or offers.get("currency"))
             availability = _clean(offers.get("availability")) or None
             raw_seller = offers.get("seller")
             if isinstance(raw_seller, dict):
@@ -206,6 +225,7 @@ class CatalogScout(MarketplaceScout):
             seller_name=seller,
             title=title,
             price=amount,
+            currency=currency,
             availability=availability,
             url=_canonical(url),
             image_urls=[],
