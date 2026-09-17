@@ -1,0 +1,141 @@
+name: PUMA 15 Rerun Compare
+
+on:
+  push:
+    branches: [puma-15-rerun-compare]
+    paths:
+      - '.github/workflows/puma-15-rerun-compare.yml'
+
+jobs:
+  rerun-compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Rerun durable 15-product job and compare
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE='https://rizweb-0-2.onrender.com'
+          OLD='8a33eb4ada73'
+
+          curl -fsS "$BASE/api/jobs/$OLD" -o baseline.json
+          python - <<'PY'
+          import json
+          d=json.load(open('baseline.json',encoding='utf-8'))
+          print('PUMA15_BASELINE_META='+json.dumps({
+              'job_id':d.get('id'),
+              'engine_build':d.get('engine_build'),
+              'status':d.get('status'),
+              'products':(d.get('summary') or {}).get('products'),
+              'found_products':(d.get('summary') or {}).get('found_products'),
+              'found_pct':(d.get('summary') or {}).get('found_pct'),
+              'offers':(d.get('summary') or {}).get('offers'),
+              'confirmed':(d.get('summary') or {}).get('confirmed'),
+              'probable':(d.get('summary') or {}).get('probable'),
+              'seconds':round((d.get('finished_at') or 0)-(d.get('started_at') or 0),2),
+          },ensure_ascii=False),flush=True)
+          PY
+
+          curl -fsS -X POST "$BASE/api/jobs/$OLD/rerun" -o rerun.json
+          cat rerun.json
+          NEW="$(python -c 'import json; print(json.load(open("rerun.json",encoding="utf-8"))["job_id"])')"
+          echo "PUMA15_NEW_JOB_ID=$NEW"
+
+          status=''
+          for i in $(seq 1 540); do
+            curl -fsS "$BASE/api/jobs/$NEW" -o current.json
+            status="$(python -c 'import json; print(json.load(open("current.json",encoding="utf-8")).get("status",""))')"
+            if [ $((i % 6)) -eq 1 ]; then
+              python - <<'PY'
+          import json
+          d=json.load(open('current.json',encoding='utf-8'))
+          print('PUMA15_PROGRESS='+json.dumps({
+              'status':d.get('status'),'percent':d.get('percent'),'current':d.get('current'),
+              'total':d.get('total'),'current_product':d.get('current_product'),
+              'message':d.get('message')
+          },ensure_ascii=False),flush=True)
+          PY
+            fi
+            if [ "$status" = done ]; then break; fi
+            if [ "$status" = error ] || [ "$status" = interrupted ]; then
+              cat current.json
+              exit 1
+            fi
+            sleep 5
+          done
+          test "$status" = done
+
+          python - <<'PY'
+          import json
+          old=json.load(open('baseline.json',encoding='utf-8'))
+          new=json.load(open('current.json',encoding='utf-8'))
+          os=old.get('summary') or {}
+          ns=new.get('summary') or {}
+          def meta(d,s):
+              return {
+                  'job_id':d.get('id'),'engine_build':d.get('engine_build'),
+                  'products':s.get('products'),'found_products':s.get('found_products'),
+                  'found_pct':s.get('found_pct'),'offers':s.get('offers'),
+                  'confirmed':s.get('confirmed'),'probable':s.get('probable'),
+                  'sources':s.get('sources'),
+                  'seconds':round((d.get('finished_at') or 0)-(d.get('started_at') or 0),2),
+              }
+          print('PUMA15_CURRENT_META='+json.dumps(meta(new,ns),ensure_ascii=False),flush=True)
+          print('PUMA15_DELTA_META='+json.dumps({
+              'found_products':(ns.get('found_products') or 0)-(os.get('found_products') or 0),
+              'offers':(ns.get('offers') or 0)-(os.get('offers') or 0),
+              'confirmed':(ns.get('confirmed') or 0)-(os.get('confirmed') or 0),
+              'probable':(ns.get('probable') or 0)-(os.get('probable') or 0),
+              'seconds':round(meta(new,ns)['seconds']-meta(old,os)['seconds'],2),
+          },ensure_ascii=False),flush=True)
+
+          op={p.get('article'):p for p in os.get('product_results') or []}
+          np={p.get('article'):p for p in ns.get('product_results') or []}
+          regressions=[]; improvements=[]
+          for article in [p.get('article') for p in os.get('product_results') or []]:
+              a=op.get(article) or {}; b=np.get(article) or {}
+              def errs(p):
+                  out={}
+                  for src,d in (p.get('diagnostics') or {}).items():
+                      e=d.get('errors') or []
+                      if e: out[src]=e
+                  return out
+              row={
+                  'article':article,
+                  'name':b.get('name') or a.get('name'),
+                  'old_status':a.get('status'),'new_status':b.get('status'),
+                  'old_offers':a.get('offers',0),'new_offers':b.get('offers',0),
+                  'old_confirmed':a.get('confirmed',0),'new_confirmed':b.get('confirmed',0),
+                  'old_probable':a.get('probable',0),'new_probable':b.get('probable',0),
+                  'old_sources':a.get('sources',0),'new_sources':b.get('sources',0),
+                  'old_marketplaces':a.get('marketplaces',''),'new_marketplaces':b.get('marketplaces',''),
+                  'old_min':a.get('min_price'),'new_min':b.get('min_price'),
+                  'old_median':a.get('median_price'),'new_median':b.get('median_price'),
+                  'old_errors':errs(a),'new_errors':errs(b),
+              }
+              print('PUMA15_PRODUCT='+json.dumps(row,ensure_ascii=False),flush=True)
+              details=[]
+              for o in b.get('offers_detail') or []:
+                  details.append({k:o.get(k) for k in ('source','price','found_title','url','identity_confidence','match')})
+              print('PUMA15_CURRENT_OFFERS='+json.dumps({'article':article,'offers':details},ensure_ascii=False),flush=True)
+              if a.get('status')=='FOUND' and b.get('status')!='FOUND':
+                  regressions.append(article+':FOUND->'+str(b.get('status')))
+              if (b.get('offers') or 0) < (a.get('offers') or 0):
+                  regressions.append(article+':offers '+str(a.get('offers',0))+'->'+str(b.get('offers',0)))
+              if a.get('status')!='FOUND' and b.get('status')=='FOUND':
+                  improvements.append(article+':'+str(a.get('status'))+'->FOUND')
+              if (b.get('confirmed') or 0) > (a.get('confirmed') or 0):
+                  improvements.append(article+':confirmed '+str(a.get('confirmed',0))+'->'+str(b.get('confirmed',0)))
+          print('PUMA15_REGRESSIONS='+json.dumps(regressions,ensure_ascii=False),flush=True)
+          print('PUMA15_IMPROVEMENTS='+json.dumps(improvements,ensure_ascii=False),flush=True)
+          PY
+
+      - name: Upload comparison inputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: puma-15-rerun-compare
+          path: |
+            baseline.json
+            current.json
+            rerun.json
+          retention-days: 7
