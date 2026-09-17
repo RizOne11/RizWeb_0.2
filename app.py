@@ -149,7 +149,10 @@ def rerun_job(job_id):
     if not src.exists():return jsonify({"ok":False,"message":"Вхідний файл цього job більше не доступний."}),404
     supplier=j.get("supplier") or src.stem or "Не вказано"
     selected=list(j.get("marketplaces") or ["prom","epicentr","hotline","web_shops"])
-    limit=max(1,min(int(j.get("limit") or 30),int(os.getenv("MAX_PRODUCTS_PER_JOB","5000"))))
+    requested_limit=request.args.get("limit")
+    try:limit=int(requested_limit) if requested_limit is not None else int(j.get("limit") or 30)
+    except (TypeError,ValueError):limit=int(j.get("limit") or 30)
+    limit=max(1,min(limit,int(os.getenv("MAX_PRODUCTS_PER_JOB","5000"))))
     fp=_job_fingerprint(src,supplier,selected,limit);dup=_find_active_duplicate(fp)
     if dup:return jsonify({"ok":True,"job_id":dup,"url":url_for("job_page",job_id=dup),"reused":True})
     jid=uuid.uuid4().hex[:12];d=JOBS_DIR/jid;d.mkdir(parents=True,exist_ok=True);fn=secure_filename(src.name) or "catalog.xlsx";dst=d/fn;shutil.copy2(src,dst)
