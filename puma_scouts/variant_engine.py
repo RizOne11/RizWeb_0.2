@@ -35,8 +35,6 @@ _ENTITY_PATTERNS = {
     "perfume": r"\b(?:парфум|парфюм|туалетн\w+ вод|eau de|perfume)\b",
 }
 
-# Parts must be described as parts. A normal whole product may mention its screen,
-# battery or matrix in marketing/spec text, so bare nouns are intentionally not enough.
 _PART_PATTERNS = {
     "spare_part": r"\b(?:шлейф|flex cable|запчаст\w*|spare part|дисплейн\w+ модул\w*|дисплей\s+(?:модул\w*|для\b)|display\s+(?:module|replacement|for\b)|екран\s+(?:модул\w*|для\b)|экран\s+(?:модул\w*|для\b)|screen\s+(?:module|replacement|for\b)|тачскрин\w*|touchscreen\s+(?:module|replacement|for\b)|сенсор\s+(?:для\b|модул\w*)|матриц[аы]\s+(?:для\b|модул\w*)|акумулятор\s+для\b|аккумулятор\s+для\b|battery\s+(?:replacement|for\b)|материнск\w+ плат\w*|motherboard|задн\w+ кришк\w*|задн\w+ крышк\w*)\b",
     "accessory": r"\b(?:чохол\w*|чехол\w*|бампер\w*|захисн\w+ скло|защитн\w+ стекло|захисн\w+ плівк\w*|защитн\w+ пленк\w*|гідрогел\w*|гидрогел\w*|ремінець\w*|ремешок\w*|адаптер\w*|перехідник\w*|переходник\w*|usb hub|хаб)\b",
@@ -92,21 +90,33 @@ def _short_family(tokens:frozenset[str])->set[str]:
     return {t for t in tokens if len(t)<=8 and re.search(r"[a-zа-яіїє]",t,re.I) and re.search(r"\d",t)}
 
 
-def _named_generation(text:str)->set[tuple[str,int]]:
-    """Generic named-family ordinal: `AirPods Pro 2`, `Watch 7`, `Buds 3`.
-    Memory, years and dimensions are deliberately excluded elsewhere; this only
-    fires when a word-family token is directly followed by a small ordinal.
+def named_generations(text:str)->dict[str,int]:
+    """Named-family ordinal, e.g. AirPods Pro 2 / Watch 7 / Buds 3.
+    Only small ordinals directly after a word-family token are considered.
     """
-    t=norm(text);out=set()
-    words=t.split()
-    skip={"gb","гб","tb","тб","hz","гц","mm","мм","cm","см","ml","мл"}
+    t=norm(text);out={};words=t.split()
+    skip={"gb","гб","tb","тб","hz","гц","mm","мм","cm","см","ml","мл","usb","type","wifi","lte"}
     for i in range(len(words)-1):
         family=re.sub(r"[^a-zа-яіїє]","",words[i],flags=re.I)
         nxt=re.sub(r"[^0-9]","",words[i+1])
         if not family or family in skip or not nxt:continue
         n=int(nxt)
-        if 1<=n<=20 and family not in {"usb","type","wifi","lte","5g"}:out.add((family,n))
+        if 1<=n<=20:out[family]=n
     return out
+
+
+def generation_confirmation(expected_text:str,candidate_text:str)->tuple[bool,str|None]:
+    """Return whether a material named generation in the mission is confirmed.
+    Missing generation is uncertainty, not an invented mismatch. Strong identifiers
+    may override this later in the validator.
+    """
+    eg,cg=named_generations(expected_text),named_generations(candidate_text)
+    if not eg:return True,None
+    common=set(eg)&set(cg)
+    for family in common:
+        if eg[family]!=cg[family]:return False,f"generation mismatch: {family} expected {eg[family]}, got {cg[family]}"
+    if common:return True,None
+    return False,"material generation not confirmed"
 
 
 def identity_conflicts(expected_text:str,candidate_text:str)->list[str]:
@@ -117,15 +127,11 @@ def identity_conflicts(expected_text:str,candidate_text:str)->list[str]:
     elif expected.entity and candidate.entity and expected.entity!=candidate.entity:
         out.append(f"entity mismatch: expected {expected.entity}, got {candidate.entity}")
     ef,cf=_short_family(expected.core_tokens),_short_family(candidate.core_tokens)
-    if ef and cf and ef.isdisjoint(cf):
-        out.append(f"product family mismatch: expected {sorted(ef)}, got {sorted(cf)}")
-    elif expected.core_tokens and candidate.core_tokens and expected.core_tokens.isdisjoint(candidate.core_tokens):
-        out.append(f"product core mismatch: expected {sorted(expected.core_tokens)}, got {sorted(candidate.core_tokens)}")
-    eg,cg=_named_generation(expected_text),_named_generation(candidate_text)
-    if eg and cg:
-        em={k:v for k,v in eg};cm={k:v for k,v in cg}
-        for family in em.keys()&cm.keys():
-            if em[family]!=cm[family]:out.append(f"generation mismatch: {family} expected {em[family]}, got {cm[family]}")
+    if ef and cf and ef.isdisjoint(cf):out.append(f"product family mismatch: expected {sorted(ef)}, got {sorted(cf)}")
+    elif expected.core_tokens and candidate.core_tokens and expected.core_tokens.isdisjoint(candidate.core_tokens):out.append(f"product core mismatch: expected {sorted(expected.core_tokens)}, got {sorted(candidate.core_tokens)}")
+    eg,cg=named_generations(expected_text),named_generations(candidate_text)
+    for family in set(eg)&set(cg):
+        if eg[family]!=cg[family]:out.append(f"generation mismatch: {family} expected {eg[family]}, got {cg[family]}")
     return out
 
 
