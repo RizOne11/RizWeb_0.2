@@ -84,29 +84,30 @@ async def scan(mission:ProductMission,selected:list[str]|None=None)->list[dict[s
         current=dedup.get(key)
         if current is None or x["match"]>current["match"]:dedup[key]=x
     return list(dedup.values())
-
+def _market_summary(offers):
+    groups={}
+    for x in offers:
+        if x.get("price") is None:continue
+        groups.setdefault(x["source"],[]).append(x["price"])
+    return " | ".join(f"{src}: "+", ".join(f"{price:g} грн"+(f" ×{prices.count(price)}" if prices.count(price)>1 else "") for price in sorted(set(prices))) for src,prices in sorted(groups.items()))
 def product_report(missions:list[ProductMission],rows:list[dict[str,Any]])->list[dict[str,Any]]:
     by_article={}
     for x in rows:by_article.setdefault(x["article"],[]).append(x)
     report=[]
     for m in missions:
         offers=by_article.get(m.article,[]);priced=[x["price"] for x in offers if x.get("price") is not None];conf=Counter(x.get("identity_confidence","LEGACY_PASS") for x in offers)
-        report.append({"article":m.article,"name":m.source_data.get("name",""),"brand":m.source_data.get("brand",""),"model":m.source_data.get("model",""),"own_price":m.source_data.get("own_price",""),"status":"FOUND" if offers else "NOT_FOUND","offers":len(offers),"sources":len({x["source"] for x in offers}),"min_price":min(priced) if priced else None,"median_price":statistics.median(priced) if priced else None,"avg_price":round(sum(priced)/len(priced),2) if priced else None,"max_price":max(priced) if priced else None,"confirmed":conf.get("CONFIRMED",0),"probable":conf.get("PROBABLE",0),"offer_rows":offers})
+        report.append({"article":m.article,"name":m.source_data.get("name",""),"brand":m.source_data.get("brand",""),"model":m.source_data.get("model",""),"own_price":m.source_data.get("own_price",""),"status":"FOUND" if offers else "NOT_FOUND","marketplaces":_market_summary(offers),"offers":len(offers),"sources":len({x["source"] for x in offers}),"min_price":min(priced) if priced else None,"median_price":statistics.median(priced) if priced else None,"avg_price":round(sum(priced)/len(priced),2) if priced else None,"max_price":max(priced) if priced else None,"confirmed":conf.get("CONFIRMED",0),"probable":conf.get("PROBABLE",0),"offer_rows":offers})
     return report
-
 def save(rows:list[dict[str,Any]],output:str,missions:list[ProductMission]|None=None)->None:
-    missions=missions or [] ; products=product_report(missions,rows) if missions else []
-    wb=Workbook();overview=wb.active;overview.title="Результат";overview.append(["Артикул","Назва","Бренд","Модель","Вхідна ціна","Статус","Мін. ринку","Медіана","Середня","Макс. ринку","Карток","Джерел","CONFIRMED","PROBABLE"])
-    for p in products:overview.append([p[k] for k in ("article","name","brand","model","own_price","status","min_price","median_price","avg_price","max_price","offers","sources","confirmed","probable")])
+    missions=missions or [];products=product_report(missions,rows) if missions else [];wb=Workbook();overview=wb.active;overview.title="Результат";overview.append(["Артикул","Назва","Бренд","Модель","Вхідна ціна","Статус","Маркетплейс → ціна","Мін. ринку","Медіана","Середня","Макс. ринку","Карток","Джерел","CONFIRMED","PROBABLE"])
+    for p in products:overview.append([p[k] for k in ("article","name","brand","model","own_price","status","marketplaces","min_price","median_price","avg_price","max_price","offers","sources","confirmed","probable")])
     overview.freeze_panes="A2";overview.auto_filter.ref=overview.dimensions
-    ws=wb.create_sheet("Пропозиції");keys=("article","name","brand","model","own_price","source","price","currency","availability","found_title","url","match","identity_confidence","domain","health");ws.append(["Артикул","Назва","Бренд","Модель","Вхідна ціна","Джерело","Ціна","Валюта","Наявність","Знайдена назва","URL","Match","Identity Confidence","Домен","Health"])
-    defaults={"identity_confidence":"LEGACY_PASS","domain":"","health":"","own_price":""}
+    ws=wb.create_sheet("Пропозиції");keys=("article","name","brand","model","own_price","source","price","currency","availability","found_title","url","match","identity_confidence","domain","health");ws.append(["Артикул","Назва","Бренд","Модель","Вхідна ціна","Джерело","Ціна","Валюта","Наявність","Знайдена назва","URL","Match","Identity Confidence","Домен","Health"]);defaults={"identity_confidence":"LEGACY_PASS","domain":"","health":"","own_price":""}
     for x in rows:ws.append([x.get(k,defaults.get(k,"")) for k in keys])
     ws.freeze_panes="A2";ws.auto_filter.ref=ws.dimensions
     summary=wb.create_sheet("Ціна → картки");summary.append(["Артикул","Назва","Джерело","Ціна","Карток"]);groups=Counter((x["article"],x["name"],x["source"],x["price"]) for x in rows if x.get("price") is not None)
     for key,count in sorted(groups.items(),key=lambda z:(z[0][0],z[0][2],z[0][3])):summary.append([*key,count])
     summary.freeze_panes="A2";summary.auto_filter.ref=summary.dimensions;wb.save(output)
-
 async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[str]|None=None,progress_cb:Callable|None=None)->dict[str,Any]:
     missions=read_missions(input_path,limit);rows=[];semaphore=asyncio.Semaphore(4);completed=0;lock=asyncio.Lock()
     async def one(m):
@@ -121,7 +122,6 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
     for found in await asyncio.gather(*[one(m) for m in missions]):rows.extend(found)
     products=product_report(missions,rows);save(rows,output_path,missions)
     if progress_cb:progress_cb(len(missions),len(missions),"Готово","Формуємо звіт…")
-    found=sum(1 for p in products if p["status"]=="FOUND");confidence=Counter(x.get('identity_confidence','LEGACY_PASS') for x in rows)
-    web_products=[{k:v for k,v in p.items() if k!="offer_rows"} | {"offers_detail":p["offer_rows"]} for p in products]
+    found=sum(1 for p in products if p["status"]=="FOUND");confidence=Counter(x.get('identity_confidence','LEGACY_PASS') for x in rows);web_products=[{k:v for k,v in p.items() if k!="offer_rows"}|{"offers_detail":p["offer_rows"]} for p in products]
     return {"products":len(missions),"offers":len(rows),"found_products":found,"found_pct":round(found/max(1,len(missions))*100,1),"sources":len({x['source'] for x in rows}),"confirmed":confidence.get("CONFIRMED",0),"probable":confidence.get("PROBABLE",0),"product_results":web_products}
 def run_sync(input_path:str,output_path:str,**kwargs):return asyncio.run(run(input_path,output_path,**kwargs))
