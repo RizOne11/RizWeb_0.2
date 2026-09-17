@@ -11,20 +11,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Wait for live durable storage
+      - name: Wait for Render auto-deploy to settle
         shell: bash
         run: |
           set -euo pipefail
           BASE='https://rizweb-0-2.onrender.com'
-          for i in $(seq 1 90); do
+          sleep 60
+          ok=0
+          for i in $(seq 1 30); do
             body="$(curl -fsS "$BASE/api/storage" || true)"
             echo "storage=$body"
             if python -c 'import json,sys; d=json.loads(sys.argv[1]); raise SystemExit(0 if d.get("mode")=="s3" and d.get("durable") is True else 1)' "$body" 2>/dev/null; then
-              exit 0
+              ok=$((ok+1))
+              if [ "$ok" -ge 3 ]; then exit 0; fi
+            else
+              ok=0
             fi
             sleep 5
           done
-          echo 'Timed out waiting for durable live service' >&2
+          echo 'Timed out waiting for stable durable live service' >&2
           exit 1
 
       - name: Create real live job and download reports
@@ -47,23 +52,17 @@ jobs:
             "$BASE/analyze"
 
           location="$(awk 'BEGIN{IGNORECASE=1} /^location:/{gsub("\r",""); print $2}' headers.txt | tail -1)"
-          echo "location=$location"
           jid="$(printf '%s' "$location" | sed -E 's#^.*/jobs/([0-9a-f]+).*#\1#')"
           test -n "$jid"
           echo "PUMA_DURABLE_JOB_ID=$jid"
 
           status=''
-          for i in $(seq 1 180); do
+          for i in $(seq 1 120); do
             curl -fsS "$BASE/api/jobs/$jid" -o status.json
-            cat status.json
             status="$(python -c 'import json; print(json.load(open("status.json",encoding="utf-8")).get("status",""))')"
-            if [ "$status" = done ]; then
-              break
-            fi
-            if [ "$status" = error ]; then
-              echo 'Job failed' >&2
-              exit 1
-            fi
+            echo "job=$jid status=$status"
+            if [ "$status" = done ]; then break; fi
+            if [ "$status" = error ] || [ "$status" = interrupted ]; then cat status.json; exit 1; fi
             sleep 5
           done
           test "$status" = done
