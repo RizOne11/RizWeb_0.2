@@ -62,7 +62,7 @@ jobs:
           for product in result:
               for row in product['rows']:
                   title=(row.get('title') or '').casefold()
-                  if product['article']=='11676' and re.search(r'ambush|амбушур|ear\s*pad|earpad|накладк.*оголов|headband\s+(?:cover|cushion|pad)', title, re.I):
+                  if product['article']=='11676' and re.search(r'амбуш[ую]р|ear\s*pad|earpad|накладк.*оголов|headband\s+(?:cover|cushion|pad)', title, re.I):
                       contamination.append({'article':product['article'],'reason':'HEADPHONE_ACCESSORY','title':row.get('title'),'url':row.get('url')})
                   if product['article']=='1724889898' and re.search(r'sunceramic|invita\s+ch[-\s]?t500', title, re.I):
                       contamination.append({'article':product['article'],'reason':'EMBY_IDENTITY_CONTAMINATION','title':row.get('title'),'url':row.get('url')})
