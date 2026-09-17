@@ -4,7 +4,7 @@ import re
 from typing import Any
 
 from puma_scouts.models import IdentityConfidence, Marketplace, Offer, ProductMission, ValidatedOffer, Verdict
-from puma_scouts.query import extract_identifiers
+from puma_scouts.query import article_is_published, extract_identifiers, identifier_in_text
 from puma_scouts.variant_engine import generation_confirmation, named_generations, signature, variant_conflicts
 
 
@@ -168,28 +168,28 @@ def _pack_count(text: str) -> int | None:
 
 
 def _quantity_conflict(src: str, off: str, strong: bool) -> str | None:
-    e = _pack_count(src)
-    if not e:
+    expected = _pack_count(src)
+    if not expected:
         return None
-    a = _pack_count(off)
-    if a is not None and a != e:
-        return f"pack quantity mismatch: expected {e}, got {a}"
-    if a is None and not strong:
-        return f"pack quantity not confirmed: expected {e}"
+    actual = _pack_count(off)
+    if actual is not None and actual != expected:
+        return f"pack quantity mismatch: expected {expected}, got {actual}"
+    if actual is None and not strong:
+        return f"pack quantity not confirmed: expected {expected}"
     return None
 
 
 def _year_refresh_conflicts(src: str, off: str) -> list[str]:
-    s, o = _norm(src), _norm(off)
+    source, candidate = _norm(src), _norm(off)
     out = []
-    sy = set(re.findall(r"\b20\d{2}\b", s))
-    oy = set(re.findall(r"\b20\d{2}\b", o))
-    if sy and oy and sy.isdisjoint(oy):
-        out.append(f"variant year mismatch: expected {sorted(sy)}, got {sorted(oy)}")
-    hz = lambda t: set(re.findall(r"\b(\d{2,3})\s*(?:гц|hz)\b", t, re.I))
-    sh, oh = hz(s), hz(o)
-    if sh and oh and sh.isdisjoint(oh):
-        out.append(f"refresh-rate mismatch: expected {sorted(sh)}, got {sorted(oh)}")
+    source_years = set(re.findall(r"\b20\d{2}\b", source))
+    candidate_years = set(re.findall(r"\b20\d{2}\b", candidate))
+    if source_years and candidate_years and source_years.isdisjoint(candidate_years):
+        out.append(f"variant year mismatch: expected {sorted(source_years)}, got {sorted(candidate_years)}")
+    hz = lambda text: set(re.findall(r"\b(\d{2,3})\s*(?:гц|hz)\b", text, re.I))
+    source_hz, candidate_hz = hz(source), hz(candidate)
+    if source_hz and candidate_hz and source_hz.isdisjoint(candidate_hz):
+        out.append(f"refresh-rate mismatch: expected {sorted(source_hz)}, got {sorted(candidate_hz)}")
     return out
 
 
@@ -220,19 +220,32 @@ def _identity_confidence(
 def validate_offer(mission: ProductMission, offer: Offer) -> ValidatedOffer:
     source_text = " ".join(str(v) for v in mission.source_data.values())
     offer_text = " ".join([offer.title, *[f"{k} {v}" for k, v in offer.attributes.items()]])
-    st, ot = _tokens(source_text), _tokens(offer_text)
-    overlap = len(st & ot) / max(1, len(st))
+    source_tokens, offer_tokens = _tokens(source_text), _tokens(offer_text)
+    overlap = len(source_tokens & offer_tokens) / max(1, len(source_tokens))
+
     ids = extract_identifiers(mission)
-    matched = [i for i in ids if _strong_identifier(i) and _compact(i) and _compact(i) in _compact(offer_text)]
+    matched = [
+        identifier for identifier in ids
+        if _strong_identifier(identifier) and _compact(identifier) and _compact(identifier) in _compact(offer_text)
+    ]
+
+    # Supplier articles are normally SKU-lock only. If the article is explicitly
+    # published in the source product name/identifier fields, an exact bounded
+    # match in the candidate is legitimate strong evidence even for short SKUs
+    # such as 35-005 / 01-0177 / 36-031.
+    if article_is_published(mission) and identifier_in_text(mission.article, offer_text):
+        if mission.article not in matched:
+            matched.insert(0, mission.article)
+
     model = _explicit(mission, {"model", "mpn", "ean", "gtin", "gtin13"})
-    mm = _model_match(model, offer_text)
+    model_match = _model_match(model, offer_text)
     brand = _explicit(mission, {"brand", "manufacturer", "vendor"})
-    bm = _brand_match(brand, offer_text)
-    strong = bool(matched or mm)
+    brand_match = _brand_match(brand, offer_text)
+    strong = bool(matched or model_match)
     source_name = _explicit(mission, {"name", "title", "product_name", "назва", "наименование"}) or source_text
 
     problems = []
-    for p in (
+    for problem in (
         _authenticity_conflict(source_text, offer_text),
         _condition_conflict(source_text, offer_text),
         _quantity_conflict(source_text, offer_text, strong),
@@ -240,33 +253,33 @@ def validate_offer(mission: ProductMission, offer: Offer) -> ValidatedOffer:
         _brand_conflict(brand, offer_text),
         _foreign_brand_before_model_conflict(brand, model, source_name, offer.title),
     ):
-        if p:
-            problems.append(p)
+        if problem:
+            problems.append(problem)
     problems.extend(variant_conflicts(source_text, offer_text))
     problems.extend(_year_refresh_conflicts(source_text, offer_text))
 
     generation_ok, generation_reason = generation_confirmation(source_text, offer_text)
     if not generation_ok and generation_reason and "mismatch" not in generation_reason and not strong:
         problems.append(generation_reason)
-    if brand and not (bm or strong):
+    if brand and not (brand_match or strong):
         problems.append(f"brand not confirmed: {brand}")
 
     conflicts = list(dict.fromkeys(problems))
     positive = []
     if matched:
         positive.append("strong identifier match: " + ", ".join(matched[:4]))
-    if mm:
+    if model_match:
         positive.append("explicit model match: " + str(model))
     if named_generations(source_text) and generation_ok:
         positive.append("material generation confirmed")
-    if brand and bm:
+    if brand and brand_match:
         positive.append("brand match: " + brand)
-    if brand and not bm and strong:
+    if brand and not brand_match and strong:
         positive.append("brand token absent but exact identity confirmed")
     if overlap >= .35:
         positive.append(f"source token overlap={overlap:.2f}")
 
-    confidence = _identity_confidence(source_text, offer_text, strong, matched, mm, overlap, conflicts)
+    confidence = _identity_confidence(source_text, offer_text, strong, matched, model_match, overlap, conflicts)
     if conflicts:
         score = min(.64, .20 + overlap)
         verdict = Verdict.CONFLICT if overlap >= .18 else Verdict.REJECT
@@ -274,7 +287,7 @@ def validate_offer(mission: ProductMission, offer: Offer) -> ValidatedOffer:
         score = min(.69, .30 + overlap)
         verdict = Verdict.CONFLICT
         conflicts.append("ambiguous identity: insufficient unique product evidence")
-    elif model and not mm and offer.marketplace != Marketplace.PROM:
+    elif model and not model_match and offer.marketplace != Marketplace.PROM:
         if overlap >= .18:
             score = min(.64, .20 + overlap)
             verdict = Verdict.CONFLICT
@@ -282,7 +295,7 @@ def validate_offer(mission: ProductMission, offer: Offer) -> ValidatedOffer:
         else:
             score = overlap
             verdict = Verdict.REJECT
-    elif model and not mm and offer.marketplace == Marketplace.PROM:
+    elif model and not model_match and offer.marketplace == Marketplace.PROM:
         if overlap >= .55:
             score = min(.88, .42 + overlap)
             verdict = Verdict.PASS
@@ -295,7 +308,7 @@ def validate_offer(mission: ProductMission, offer: Offer) -> ValidatedOffer:
             score = overlap
             verdict = Verdict.REJECT
     elif strong:
-        score = min(1.0, .72 + .05 * len(matched) + (.05 if mm else 0) + .18 * overlap)
+        score = min(1.0, .72 + .05 * len(matched) + (.05 if model_match else 0) + .18 * overlap)
         verdict = Verdict.PASS
     elif overlap >= .55:
         score = min(.79, .35 + overlap)
