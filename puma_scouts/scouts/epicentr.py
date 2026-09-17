@@ -233,12 +233,22 @@ class EpicentrScout(MarketplaceScout):
                 *(self._candidate_urls(client, query) for query in queries),
                 return_exceptions=True,
             )
+            native_batches = []
             for query, result in zip(queries, native_results):
                 if isinstance(result, Exception):
                     errors.append(f"search {query!r}: {type(result).__name__}: {result}")
                     continue
                 seen += len(result)
-                offers = await self._fetch_offers(client, mission, query, result, "native")
+                native_batches.append((query, result))
+
+            native_offers = await asyncio.gather(
+                *(self._fetch_offers(client, mission, query, urls, "native") for query, urls in native_batches),
+                return_exceptions=True,
+            )
+            for (query, _), offers in zip(native_batches, native_offers):
+                if isinstance(offers, Exception):
+                    errors.append(f"fetch {query!r}: {type(offers).__name__}: {offers}")
+                    continue
                 for offer in offers:
                     unique.setdefault(str(offer.url), offer)
 
@@ -246,14 +256,22 @@ class EpicentrScout(MarketplaceScout):
             passes = [item for item in validated if item.verdict == Verdict.PASS]
 
             if not passes and self.serper.enabled:
-                for query in queries[:2]:
-                    try:
-                        urls = await self._serper_candidate_urls(client, query)
-                        seen += len(urls)
-                        offers = await self._fetch_offers(client, mission, query, urls, "serper")
-                    except Exception as exc:
-                        errors.append(f"serper {query!r}: {type(exc).__name__}: {exc}")
+                async def serper_batch(query):
+                    urls = await self._serper_candidate_urls(client, query)
+                    offers = await self._fetch_offers(client, mission, query, urls, "serper")
+                    return len(urls), offers
+
+                serper_queries = queries[:2]
+                serper_results = await asyncio.gather(
+                    *(serper_batch(query) for query in serper_queries),
+                    return_exceptions=True,
+                )
+                for query, result in zip(serper_queries, serper_results):
+                    if isinstance(result, Exception):
+                        errors.append(f"serper {query!r}: {type(result).__name__}: {result}")
                         continue
+                    count, offers = result
+                    seen += count
                     for offer in offers:
                         unique.setdefault(str(offer.url), offer)
 
