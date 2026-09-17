@@ -19,43 +19,42 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - name: Probe Epicentr client price endpoints
+      - name: Trace Epicentr Nuxt price state
         run: |
           python - <<'PY'
           import html,json,re,httpx
-          from urllib.parse import quote_plus,urljoin,urlsplit
-          h={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128 Safari/537.36','Accept-Language':'uk-UA,uk;q=0.9,ru;q=0.7,en;q=0.5'}
-          base='https://epicentrk.ua'
-          q='SM-A556BLVCEUC'
-          search=f'{base}/ua/search/?q={quote_plus(q)}'
-          r=httpx.get(search,headers=h,follow_redirects=True,timeout=20); text=html.unescape(r.text).replace('\\/','/')
-          urls=[]
-          for x in re.findall(r'href=["\']([^"\']+SM-A556[^"\']*\.html)["\']',text,re.I):
-            u=urljoin(search,x)
-            if u not in urls: urls.append(u)
-          if not urls:
-            urls=[urljoin(search,x) for x in re.findall(r'href=["\']([^"\']+\.html)["\']',text,re.I) if 'galaxy-a55' in x.lower()][:2]
-          print('EPICENTR_PRICE_PROBE_PRODUCTS='+json.dumps(urls[:3],ensure_ascii=False),flush=True)
-          for u in urls[:2]:
-            pr=httpx.get(u,headers=h,follow_redirects=True,timeout=20); page=html.unescape(pr.text).replace('\\/','/')
-            ids={k:sorted(set(re.findall(r'["\']?'+k+r'["\']?\s*[:=]\s*["\']?([0-9]{4,})',page,re.I)))[:10] for k in ['productId','productModelId','modelId','offerId','sellerId','merchantId']}
-            scripts=[]
-            for src in re.findall(r'<script[^>]+src=["\']([^"\']+)["\']',page,re.I):
-              su=urljoin(u,src)
-              if su not in scripts:scripts.append(su)
-            endpoint_strings=[]
-            for su in scripts[-25:]:
+          from urllib.parse import urljoin
+          h={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128 Safari/537.36','Accept-Language':'uk-UA,uk;q=0.9,ru;q=0.7,en;q=0.5','Referer':'https://epicentrk.ua/'}
+          u='https://epicentrk.ua/shop/smartfon-samsung-galaxy-a55-5g-8-256gb-light-violet-sm-a556blvceuc.html'
+          r=httpx.get(u,headers=h,follow_redirects=True,timeout=20); page=html.unescape(r.text).replace('\\/','/')
+          needles=['showPrice','groupParamsPrice','competitors_prices','productId','productModelId']
+          out=[]
+          scripts=[]
+          for src in re.findall(r'<script[^>]+src=["\']([^"\']+)["\']',page,re.I):
+            su=urljoin(u,src)
+            if su not in scripts:scripts.append(su)
+          for su in scripts:
+            try: js=httpx.get(su,headers=h,follow_redirects=True,timeout=12).text
+            except Exception: continue
+            for needle in needles:
+              pos=0
+              while True:
+                i=js.find(needle,pos)
+                if i<0: break
+                snippet=js[max(0,i-900):min(len(js),i+1400)]
+                out.append({'script':su,'needle':needle,'snippet':snippet})
+                pos=i+len(needle)
+                if sum(1 for x in out if x['needle']==needle)>=12: break
+          print('EPICENTR_NUXT_PRICE_CONTEXT='+json.dumps(out[:45],ensure_ascii=False),flush=True)
+          ids=sorted(set(re.findall(r'["\']?productId["\']?\s*[:=]\s*["\']?([0-9]{4,})',page,re.I)))
+          probes=[]
+          for pid in ids[:8]:
+            for path in [f'/api/v1/competitors_prices/{pid}',f'/api/v1/competitors_prices/?productId={pid}',f'/api/v1/competitors_prices/?product_id={pid}']:
               try:
-                js=httpx.get(su,headers=h,follow_redirects=True,timeout=10).text
-              except Exception:continue
-              if any(k in js.lower() for k in ['productmodelid','productid','price']):
-                for pat in [r'["\']([^"\']*(?:api|ajax|price|offer|product)[^"\']*)["\']',r'`([^`]*(?:api|price|offer|product)[^`]*)`']:
-                  for s in re.findall(pat,js,re.I):
-                    if len(s)<260 and ('/' in s or 'http' in s): endpoint_strings.append(s)
-            uniq=[]
-            for s in endpoint_strings:
-              if s not in uniq:uniq.append(s)
-            print('EPICENTR_CLIENT_PRICE_DIAG='+json.dumps({'url':u,'status':pr.status_code,'bytes':len(page),'ids':ids,'scripts':scripts[-12:],'endpoint_hints':uniq[:80]},ensure_ascii=False),flush=True)
+                x=httpx.get(urljoin(u,path),headers=h,follow_redirects=True,timeout=10)
+                probes.append({'pid':pid,'path':path,'status':x.status_code,'type':x.headers.get('content-type'),'body':x.text[:700]})
+              except Exception as e: probes.append({'pid':pid,'path':path,'error':type(e).__name__+': '+str(e)})
+          print('EPICENTR_PRICE_API_PROBES='+json.dumps(probes,ensure_ascii=False),flush=True)
           PY
       - name: Trace Xiaomi discovery and validation
         run: |
