@@ -103,22 +103,84 @@ def _core_tokens(text:str)->set[str]:
         if not c or c in _STOP or c in _COLOR_WORDS:continue
         if re.fullmatch(r"\d{1,4}(?:gb|гб|tb|тб)",c,re.I):continue
         if re.fullmatch(r"20\d{2}",c) or re.fullmatch(r"\d+(?:hz|гц)?",c):continue
+        if re.fullmatch(r"\d+(?:a|v|w|mah|ah|wh|hz|гц|мм|mm|см|cm|мл|ml|кг|kg|вт|квт|ква)",c,re.I):continue
         if re.search(r"[a-zа-яіїє]",c,re.I) and re.search(r"\d",c):out.add(c)
 
     # Normalize split model families such as "SGN 125" -> "sgn125".
     # This lets the identity gate compare them with compact/hyphenated forms
     # such as "SGR-70" without turning standards/measurements into models.
-    ignored_prefixes={"din","iso","iec","en","mah","ah","wh","hz","mm","cm","kg","kw","kva","volt","model","модель"}
-    for prefix,number in re.findall(r"\b([a-zа-яіїє]{2,10})\s*[-_/]?\s*(\d{2,5})\b",raw,re.I):
+    ignored_prefixes={"din","iso","iec","en","mah","ah","wh","hz","mm","cm","kg","kw","kva","volt","model"}
+    for prefix,number in re.findall(r"\b([a-z]{2,10})\s*[-_/]?\s*(\d{2,5})\b",raw,re.I):
         p=prefix.casefold()
         if p in ignored_prefixes:continue
-        out.add(re.sub(r"[^a-zа-яіїє0-9]","",p+number,re.I))
+        out.add(re.sub(r"[^a-z0-9]","",p+number,re.I))
     return out
 
 def signature(text:str)->ProductSignature:
     ram,storage=_memory(text);return ProductSignature(entity=entity_type(text),core_tokens=frozenset(_core_tokens(text)),storage_gb=frozenset(storage),ram_gb=frozenset(ram),sizes=frozenset(_sizes(text)),colors=frozenset(_colors(text)))
 
 def _short_family(tokens:frozenset[str])->set[str]:return {t for t in tokens if len(t)<=8 and re.search(r"[a-zа-яіїє]",t,re.I) and re.search(r"\d",t)}
+
+
+_MODEL_CODE_STOP_PREFIXES={"din","iso","iec","en","usb","wifi","lte","mah","ah","wh","hz","mm","cm","kg","kw","kva","volt","v","w"}
+
+def _explicit_model_codes(text:str)->set[str]:
+    """Extract explicit Latin model identifiers from visible product identity text."""
+    raw=norm(text)
+    out=set()
+
+    # Compact/hyphenated model tokens: SGR-70, CHT-500, HQ53, TC1N, P27QCB-RA.
+    for match in re.finditer(r"(?<!\w)([a-z][a-z0-9]*(?:[-_/][a-z0-9]+)*)(?!\w)",raw,re.I):
+        token=match.group(1)
+        compact=re.sub(r"[^a-z0-9]","",token.casefold())
+        if not (re.search(r"[a-z]",compact) and re.search(r"\d",compact)):
+            continue
+        prefix=(re.match(r"[a-z]+",compact) or [None])[0]
+        if prefix in _MODEL_CODE_STOP_PREFIXES:
+            continue
+        out.add(compact)
+
+    # Spaced family + number: SGN 125 -> sgn125.
+    for prefix,number in re.findall(r"\b([a-z]{2,10})\s+(\d{2,5})\b",raw,re.I):
+        p=prefix.casefold()
+        if p not in _MODEL_CODE_STOP_PREFIXES:
+            out.add(p+number)
+
+    # Some vendors publish a base model ending in a letter plus a numeric
+    # variant suffix, e.g. TC1N 5887. Preserve the full pair as material identity.
+    for base,suffix in re.findall(r"\b([a-z][a-z0-9]*\d[a-z])\s+(\d{3,6})\b",raw,re.I):
+        compact=re.sub(r"[^a-z0-9]","",base.casefold())
+        prefix=(re.match(r"[a-z]+",compact) or [None])[0]
+        if prefix not in _MODEL_CODE_STOP_PREFIXES:
+            out.add(compact+suffix)
+    return out
+
+
+def _explicit_model_conflict(expected_text:str,candidate_text:str)->str|None:
+    expected=_explicit_model_codes(expected_text)
+    candidate=_explicit_model_codes(candidate_text)
+    if not expected or not candidate:
+        return None
+
+    # Lock vendor suffixes such as TC1N 5887 vs TC1N 2247/2230.
+    def compounds(codes:set[str])->dict[str,set[str]]:
+        grouped={}
+        for code in codes:
+            m=re.fullmatch(r"([a-z][a-z0-9]*\d[a-z])(\d{3,6})",code,re.I)
+            if m:
+                grouped.setdefault(m.group(1),set()).add(code)
+        return grouped
+
+    eg,cg=compounds(expected),compounds(candidate)
+    for base in set(eg)&set(cg):
+        if eg[base].isdisjoint(cg[base]):
+            return f"model variant mismatch: expected {sorted(eg[base])}, got {sorted(cg[base])}"
+
+    # If both sides explicitly name model codes and none agree, this is a
+    # material model-family conflict even when generic description overlaps.
+    if expected.isdisjoint(candidate):
+        return f"model family mismatch: expected {sorted(expected)}, got {sorted(candidate)}"
+    return None
 
 
 def _structured_numeric_codes(text: str) -> set[str]:
@@ -173,6 +235,8 @@ def identity_conflicts(expected_text:str,candidate_text:str)->list[str]:
     expected,candidate=signature(expected_text),signature(candidate_text);out=[];part_entities={"spare_part","accessory","component"}
     public_code_problem=_public_code_conflict(expected_text,candidate_text)
     if public_code_problem:out.append(public_code_problem)
+    model_problem=_explicit_model_conflict(expected_text,candidate_text)
+    if model_problem:out.append(model_problem)
     if candidate.entity in part_entities and expected.entity not in part_entities:out.append(f"whole-product mismatch: candidate is {candidate.entity}")
     elif expected.entity and candidate.entity and expected.entity!=candidate.entity:out.append(f"entity mismatch: expected {expected.entity}, got {candidate.entity}")
     ef,cf=_short_family(expected.core_tokens),_short_family(candidate.core_tokens)
