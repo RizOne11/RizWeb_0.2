@@ -35,8 +35,10 @@ _ENTITY_PATTERNS = {
     "perfume": r"\b(?:парфум|парфюм|туалетн\w+ вод|eau de|perfume)\b",
 }
 
+# Parts must be described as parts. A normal whole product may mention its screen,
+# battery or matrix in marketing/spec text, so bare nouns are intentionally not enough.
 _PART_PATTERNS = {
-    "spare_part": r"\b(?:шлейф|flex cable|запчаст\w*|spare part|дисплей\w*|display(?: module)?|екран\w*|экран\w*|screen module|тачскрин\w*|touchscreen|сенсор\w*|матриц[аы]|акумулятор\w*|аккумулятор\w*|battery|материнск\w+ плат\w*|motherboard|задн\w+ кришк\w*|задн\w+ крышк\w*)\b",
+    "spare_part": r"\b(?:шлейф|flex cable|запчаст\w*|spare part|дисплейн\w+ модул\w*|дисплей\s+(?:модул\w*|для\b)|display\s+(?:module|replacement|for\b)|екран\s+(?:модул\w*|для\b)|экран\s+(?:модул\w*|для\b)|screen\s+(?:module|replacement|for\b)|тачскрин\w*|touchscreen\s+(?:module|replacement|for\b)|сенсор\s+(?:для\b|модул\w*)|матриц[аы]\s+(?:для\b|модул\w*)|акумулятор\s+для\b|аккумулятор\s+для\b|battery\s+(?:replacement|for\b)|материнск\w+ плат\w*|motherboard|задн\w+ кришк\w*|задн\w+ крышк\w*)\b",
     "accessory": r"\b(?:чохол\w*|чехол\w*|бампер\w*|захисн\w+ скло|защитн\w+ стекло|захисн\w+ плівк\w*|защитн\w+ пленк\w*|гідрогел\w*|гидрогел\w*|ремінець\w*|ремешок\w*|адаптер\w*|перехідник\w*|переходник\w*|usb hub|хаб)\b",
     "component": r"\b(?:лів(?:ий|а)|прав(?:ий|а)|лев(?:ый|ая)|прав(?:ый|ая)|left|right)\s+(?:навушник\w*|наушник\w*|earbud\w*)\b|\b(?:no[- ]?box|без\s+(?:кейса|футляра|зарядн\w+ кейса))\b",
 }
@@ -71,13 +73,10 @@ def _sizes(text:str)->set[str]:
 
 
 def _core_tokens(text:str)->set[str]:
-    """Extract product-family/model-like tokens, excluding variant memory/network/display noise."""
     raw=norm(text);out=set()
-    # First capture compact model-family tokens such as A55, S23, A27Q, X27GQ, MTJV3.
     for token in raw.split():
         c=re.sub(r"[^a-zа-яіїє0-9]","",token,re.I)
         if not c or c in _STOP or c in _COLOR_WORDS:continue
-        # Memory expressions are variants, never product core (8/256GB -> 8256gb after compaction).
         if re.fullmatch(r"\d{1,2}\d{2,4}(?:gb|гб)?",c,re.I):continue
         if re.fullmatch(r"20\d{2}",c) or re.fullmatch(r"\d+(?:hz|гц)?",c):continue
         if re.search(r"[a-zа-яіїє]",c,re.I) and re.search(r"\d",c):out.add(c)
@@ -90,9 +89,24 @@ def signature(text:str)->ProductSignature:
 
 
 def _short_family(tokens:frozenset[str])->set[str]:
-    # Short alpha+numeric family names are highly discriminative across consumer products:
-    # A55 vs A17, S23 vs A55, A27Q vs X27GQ. Long MPNs may legitimately differ by color/region.
     return {t for t in tokens if len(t)<=8 and re.search(r"[a-zа-яіїє]",t,re.I) and re.search(r"\d",t)}
+
+
+def _named_generation(text:str)->set[tuple[str,int]]:
+    """Generic named-family ordinal: `AirPods Pro 2`, `Watch 7`, `Buds 3`.
+    Memory, years and dimensions are deliberately excluded elsewhere; this only
+    fires when a word-family token is directly followed by a small ordinal.
+    """
+    t=norm(text);out=set()
+    words=t.split()
+    skip={"gb","гб","tb","тб","hz","гц","mm","мм","cm","см","ml","мл"}
+    for i in range(len(words)-1):
+        family=re.sub(r"[^a-zа-яіїє]","",words[i],flags=re.I)
+        nxt=re.sub(r"[^0-9]","",words[i+1])
+        if not family or family in skip or not nxt:continue
+        n=int(nxt)
+        if 1<=n<=20 and family not in {"usb","type","wifi","lte","5g"}:out.add((family,n))
+    return out
 
 
 def identity_conflicts(expected_text:str,candidate_text:str)->list[str]:
@@ -107,6 +121,11 @@ def identity_conflicts(expected_text:str,candidate_text:str)->list[str]:
         out.append(f"product family mismatch: expected {sorted(ef)}, got {sorted(cf)}")
     elif expected.core_tokens and candidate.core_tokens and expected.core_tokens.isdisjoint(candidate.core_tokens):
         out.append(f"product core mismatch: expected {sorted(expected.core_tokens)}, got {sorted(candidate.core_tokens)}")
+    eg,cg=_named_generation(expected_text),_named_generation(candidate_text)
+    if eg and cg:
+        em={k:v for k,v in eg};cm={k:v for k,v in cg}
+        for family in em.keys()&cm.keys():
+            if em[family]!=cm[family]:out.append(f"generation mismatch: {family} expected {em[family]}, got {cm[family]}")
     return out
 
 
