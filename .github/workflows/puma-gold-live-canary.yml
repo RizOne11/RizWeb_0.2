@@ -19,7 +19,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r requirements.txt
-      - name: Scan known short-SKU false negatives
+      - name: Scan known article-free Discovery regressions
         shell: bash
         run: |
           python - <<'PY'
@@ -61,12 +61,19 @@ jobs:
               return await asyncio.gather(*(one(m) for m in missions))
 
           result = asyncio.run(main())
-          print('PUMA_SHORT_SKU_CANARY='+json.dumps(result, ensure_ascii=False), flush=True)
+          print('PUMA_ARTICLE_FREE_CANARY='+json.dumps(result, ensure_ascii=False), flush=True)
           by_article = {item['article']: item for item in result}
+
           for item in result:
+              article = item['article'].casefold()
               if not item['queries']:
                   raise SystemExit('ZERO_QUERIES:'+item['article'])
+              for query in item['queries']:
+                  if article in query.casefold():
+                      raise SystemExit(f'ARTICLE_LEAK_IN_DISCOVERY:{item["article"]}:{query}')
 
+          # Known positive canaries. They are intentionally discovered without
+          # using supplier article as a search key.
           if by_article['35-005']['offers'] < 1:
               raise SystemExit('LIVE_FALSE_NEGATIVE:35-005')
           if by_article['01-0177']['offers'] < 1:
@@ -82,4 +89,9 @@ jobs:
                   for needle in needles:
                       if needle.casefold() in haystack:
                           raise SystemExit(f'LIVE_CONTAMINATION:{article}:{needle}')
+
+          for row in by_article['01-0177']['rows']:
+              title = (row.get('title') or '').casefold()
+              if '13 дюйм' in title or '13 inch' in title or '13"' in title:
+                  raise SystemExit('LIVE_SIZE_CONTAMINATION:01-0177:13in')
           PY
