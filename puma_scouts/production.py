@@ -89,18 +89,48 @@ def scouts(selected:list[str]|None=None):
     wanted=set(selected or all_scouts);return [s for k,s in all_scouts.items() if k in wanted]
 
 SOURCE_WALL_TIMEOUT=float(os.getenv("PUMA_SOURCE_WALL_TIMEOUT","70"))
+SOURCE_HARD_TIMEOUT=max(
+    SOURCE_WALL_TIMEOUT,
+    float(os.getenv("PUMA_SOURCE_HARD_TIMEOUT",str(SOURCE_WALL_TIMEOUT*2))),
+)
 PRODUCT_CONCURRENCY=max(1,min(int(os.getenv("PUMA_PRODUCT_CONCURRENCY","1")),4))
 
-async def _scan_source(scout,mission:ProductMission,wall_timeout:float=SOURCE_WALL_TIMEOUT):
+async def _scan_source(
+    scout,
+    mission:ProductMission,
+    wall_timeout:float=SOURCE_WALL_TIMEOUT,
+    hard_timeout:float|None=None,
+):
+    """Treat the historical wall timeout as a soft quality deadline.
+
+    The old implementation cancelled the scout at 70s and replaced any partial
+    work with an empty ACCESS_LIMITED report. A slow but useful source may now
+    finish inside a bounded recovery window; only the hard deadline cancels it.
+    """
+    soft=max(0.01,float(wall_timeout))
+    hard=max(soft,float(SOURCE_HARD_TIMEOUT if hard_timeout is None else hard_timeout))
+    task=asyncio.create_task(scout.scan(mission))
     try:
-        report=await asyncio.wait_for(scout.scan(mission),timeout=wall_timeout)
-        return scout,report
-    except asyncio.TimeoutError:
-        return scout,ScanReport(
-            article=mission.article,marketplace=scout.marketplace,health=ScanHealth.ACCESS_LIMITED,
-            errors=[f"wall_timeout_{wall_timeout:g}s"]
-        )
+        try:
+            report=await asyncio.wait_for(asyncio.shield(task),timeout=soft)
+            return scout,report
+        except asyncio.TimeoutError:
+            remaining=max(0.01,hard-soft)
+            try:
+                report=await asyncio.wait_for(asyncio.shield(task),timeout=remaining)
+                report.errors.append(f"soft_timeout_{soft:g}s_recovered")
+                return scout,report
+            except asyncio.TimeoutError:
+                task.cancel()
+                await asyncio.gather(task,return_exceptions=True)
+                return scout,ScanReport(
+                    article=mission.article,marketplace=scout.marketplace,health=ScanHealth.ACCESS_LIMITED,
+                    errors=[f"hard_timeout_{hard:g}s"]
+                )
     except Exception as exc:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task,return_exceptions=True)
         return scout,ScanReport(
             article=mission.article,marketplace=scout.marketplace,health=ScanHealth.SCOUT_ERROR,
             errors=[f"{type(exc).__name__}: {exc}"]
