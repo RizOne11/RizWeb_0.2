@@ -1,6 +1,6 @@
 import pytest
 
-from puma_scouts.models import Marketplace, Offer, ProductMission, Verdict
+from puma_scouts.models import IdentityConfidence, Marketplace, Offer, ProductMission, Verdict
 from puma_scouts.validator import validate_offer
 
 
@@ -49,6 +49,7 @@ def test_sgr70_exact_model_still_passes():
         _offer(mission, "Генератор дизельний Soygen SGR-70 50 кВт 70 кВА 380 В"),
     )
     assert checked.verdict == Verdict.PASS, checked
+    assert checked.identity_confidence == IdentityConfidence.CONFIRMED, checked
 
 
 @pytest.mark.parametrize("candidate", [
@@ -81,3 +82,4 @@ def test_xon_tc1n5887_ukrainian_exact_variant_passes():
         _offer(mission, "Портативна батарея з функцією автозапуску XON PowerBoost 25000 mAh 500A peak 1000A Чорний (TC1N 5887)"),
     )
     assert checked.verdict == Verdict.PASS, checked
+    assert checked.identity_confidence == IdentityConfidence.CONFIRMED, checked

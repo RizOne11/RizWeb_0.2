@@ -5,7 +5,7 @@ from typing import Any
 
 from puma_scouts.models import IdentityConfidence, Marketplace, Offer, ProductMission, ValidatedOffer, Verdict
 from puma_scouts.query import article_is_published, extract_identifiers, identifier_in_text
-from puma_scouts.variant_engine import generation_confirmation, named_generations, signature, variant_conflicts
+from puma_scouts.variant_engine import explicit_model_agreement, generation_confirmation, named_generations, signature, variant_conflicts
 
 
 def _norm(value: Any) -> str:
@@ -243,9 +243,10 @@ def validate_offer(mission: ProductMission, offer: Offer) -> ValidatedOffer:
 
     model = _explicit(mission, {"model", "mpn", "ean", "gtin", "gtin13"})
     model_match = _model_match(model, offer_text)
+    model_code_matches = explicit_model_agreement(source_text, offer_text)
     brand = _explicit(mission, {"brand", "manufacturer", "vendor"})
     brand_match = _brand_match(brand, offer_text)
-    strong = bool(matched or model_match)
+    strong = bool(matched or model_match or model_code_matches)
     source_name = _explicit(mission, {"name", "title", "product_name", "назва", "наименование"}) or source_text
 
     problems = []
@@ -274,6 +275,8 @@ def validate_offer(mission: ProductMission, offer: Offer) -> ValidatedOffer:
         positive.append("strong identifier match: " + ", ".join(matched[:4]))
     if model_match:
         positive.append("explicit model match: " + str(model))
+    if model_code_matches:
+        positive.append("exact model code match: " + ", ".join(sorted(model_code_matches)[:4]))
     if named_generations(source_text) and generation_ok:
         positive.append("material generation confirmed")
     if brand and brand_match:
@@ -283,7 +286,7 @@ def validate_offer(mission: ProductMission, offer: Offer) -> ValidatedOffer:
     if overlap >= .35:
         positive.append(f"source token overlap={overlap:.2f}")
 
-    confidence = _identity_confidence(source_text, offer_text, strong, matched, model_match, overlap, conflicts)
+    confidence = _identity_confidence(source_text, offer_text, strong, matched, model_match or bool(model_code_matches), overlap, conflicts)
     if conflicts:
         score = min(.64, .20 + overlap)
         verdict = Verdict.CONFLICT if overlap >= .18 else Verdict.REJECT

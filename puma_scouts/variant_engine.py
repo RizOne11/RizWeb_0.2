@@ -156,6 +156,11 @@ def _explicit_model_codes(text:str)->set[str]:
     return out
 
 
+def explicit_model_agreement(expected_text:str,candidate_text:str)->set[str]:
+    """Return exact explicit model identifiers shared by source and candidate."""
+    return _explicit_model_codes(expected_text) & _explicit_model_codes(candidate_text)
+
+
 def _explicit_model_conflict(expected_text:str,candidate_text:str)->str|None:
     expected=_explicit_model_codes(expected_text)
     candidate=_explicit_model_codes(candidate_text)
