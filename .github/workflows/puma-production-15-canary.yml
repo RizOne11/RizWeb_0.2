@@ -1,0 +1,116 @@
+name: PUMA Production 15 Canary
+
+on:
+  push:
+    branches: [puma-production-canary-run2]
+    paths:
+      - '.github/workflows/puma-production-15-canary.yml'
+
+jobs:
+  production-15:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install openpyxl
+      - name: Re-run original 15-product corpus on live PUMA
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE='https://rizweb-0-2.onrender.com'
+          OLD_JOB='8a33eb4ada73'
+
+          # Reuse the original job's report as the new catalog so article/name/brand/model
+          # are identical to the previous live run. The first sheet is PUMA-readable.
+          curl -fsS "$BASE/jobs/$OLD_JOB/xlsx" -o baseline.xlsx
+          test -s baseline.xlsx
+
+          python - <<'PY'
+          from openpyxl import load_workbook
+          wb=load_workbook('baseline.xlsx',data_only=True,read_only=True)
+          ws=wb.active
+          rows=list(ws.iter_rows(values_only=True))
+          print('BASELINE_INPUT_ROWS=',len(rows)-1)
+          for row in rows[1:16]:
+              print('BASELINE_PRODUCT=',row[0],row[1])
+          PY
+
+          curl -fsS -D headers.txt -o /dev/null \
+            -F 'catalog=@baseline.xlsx;type=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' \
+            -F 'supplier=PUMA exact 15 comparison' \
+            -F 'limit=15' \
+            -F 'marketplaces=prom' \
+            -F 'marketplaces=epicentr' \
+            -F 'marketplaces=hotline' \
+            -F 'marketplaces=web_shops' \
+            "$BASE/analyze"
+
+          location="$(awk 'BEGIN{IGNORECASE=1} /^location:/{gsub("\r",""); print $2}' headers.txt | tail -1)"
+          jid="$(printf '%s' "$location" | sed -E 's#^.*/jobs/([0-9a-f]+).*#\1#')"
+          test -n "$jid"
+          echo "PUMA_15_JOB_ID=$jid"
+
+          status=''
+          for i in $(seq 1 360); do
+            curl -fsS "$BASE/api/jobs/$jid" -o status.json
+            status="$(python -c 'import json; print(json.load(open("status.json",encoding="utf-8")).get("status",""))')"
+            if [ $((i % 6)) -eq 1 ]; then
+              python - <<'PY'
+          import json
+          d=json.load(open('status.json',encoding='utf-8'))
+          print('PUMA_PROGRESS=',d.get('current'), '/', d.get('total'), d.get('percent'), d.get('current_product'), d.get('message'))
+          PY
+            fi
+            if [ "$status" = done ]; then break; fi
+            if [ "$status" = error ] || [ "$status" = interrupted ]; then cat status.json; exit 1; fi
+            sleep 5
+          done
+          test "$status" = done
+
+          python - <<'PY'
+          import json
+          d=json.load(open('status.json',encoding='utf-8'))
+          s=d.get('summary') or {}
+          products=s.get('product_results') or []
+          print('PUMA_15_SUMMARY='+json.dumps({
+              'job_id':d.get('id'),
+              'engine_build':d.get('engine_build'),
+              'products':s.get('products'),
+              'found_products':s.get('found_products'),
+              'found_pct':s.get('found_pct'),
+              'offers':s.get('offers'),
+              'sources':s.get('sources'),
+              'confirmed':s.get('confirmed'),
+              'probable':s.get('probable'),
+          },ensure_ascii=False))
+          timeouts=0
+          for p in products:
+              diag=p.get('diagnostics') or {}
+              product_timeouts=sum(
+                  1 for src in diag.values()
+                  if any('wall_timeout' in str(e) for e in (src.get('errors') or []))
+              )
+              timeouts+=product_timeouts
+              print('PUMA_15_PRODUCT='+json.dumps({
+                  'article':p.get('article'),
+                  'name':p.get('name'),
+                  'status':p.get('status'),
+                  'offers':p.get('offers'),
+                  'sources':p.get('sources'),
+                  'confirmed':p.get('confirmed'),
+                  'probable':p.get('probable'),
+                  'marketplaces':p.get('marketplaces'),
+                  'source_health':{k:v.get('health') for k,v in diag.items()},
+                  'source_queries':{k:v.get('queries') for k,v in diag.items()},
+                  'source_pages':{k:v.get('pages') for k,v in diag.items()},
+                  'source_accepted':{k:v.get('accepted') for k,v in diag.items()},
+                  'wall_timeouts':product_timeouts,
+                  'offers_detail':[{k:o.get(k) for k in ('source','price','found_title','url','identity_confidence','match')} for o in p.get('offers_detail',[])],
+              },ensure_ascii=False))
+          print('PUMA_15_WALL_TIMEOUTS='+str(timeouts))
+          PY
+
+          curl -fsS "$BASE/jobs/$jid/xlsx" -o result.xlsx
+          test -s result.xlsx
