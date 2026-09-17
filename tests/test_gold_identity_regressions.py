@@ -111,6 +111,23 @@ def test_neighboring_cutters_sku_335_005_must_not_pass_for_35_005():
     assert any("public article mismatch" in reason for reason in checked.conflicts), checked
 
 
+def test_toolbox_13_inch_must_not_pass_for_19_inch_even_without_sku():
+    mission = ProductMission(
+        article="01-0177",
+        source_data={"name": 'Ящик для инструмента Polax 19" (01-0177)', "brand": "Polax"},
+    )
+    checked = validate_offer(
+        mission,
+        _offer(
+            mission,
+            "Пластиковий ящик для інструментів Polax з металевим замком 13 дюймів міцний органайзер для майстерні та будмайданчика",
+            price=418,
+        ),
+    )
+    assert checked.verdict != Verdict.PASS, checked
+    assert any("size/volume mismatch" in reason for reason in checked.conflicts), checked
+
+
 def test_dimension_phrase_is_not_invented_product_generation():
     generations = named_generations('Ящик для инструмента Polax пластиковый замок 19" (01-0177)')
 
