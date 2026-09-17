@@ -25,20 +25,37 @@ jobs:
           def conflict(src,off,needle):
               c=variant_conflicts(src,off)
               assert any(needle in x for x in c),(src,off,c)
+          # Smartphones / whole-product veto / color is non-material unless mission constrains it.
           assert entity_type('Монітор Redmi G34WQ з вигнутим екраном 180 Гц')=='monitor'
           conflict('Samsung Galaxy A55 5G 8/256GB','Дисплей модуль для Samsung Galaxy A55','whole-product mismatch')
           conflict('Samsung Galaxy A55 5G 8/256GB','Акумулятор для Samsung Galaxy A55','whole-product mismatch')
           conflict('Samsung Galaxy A55 5G 8/256GB','Samsung Galaxy A17 8/256GB','product family mismatch')
           clean('Samsung Galaxy A55 5G 8/256GB','Samsung Galaxy A55 5G 8/256GB Light Violet')
           clean('Samsung Galaxy A55 5G 8/256GB','Samsung Galaxy A55 5G 8/256GB Black')
+          # Headphones / generation / components / foreign brand contamination.
           conflict('Apple AirPods Pro 2 USB-C','Apple AirPods Pro 3 USB-C','generation mismatch')
           conflict('Apple AirPods Pro 2 USB-C','Лівий навушник AirPods Pro 2 USB-C','whole-product mismatch')
           clean('Apple AirPods Pro 2 USB-C','Apple AirPods Pro 2 USB-C MTJV3')
           assert _brand_conflict('Apple','Logitech Навушники-вкладиші Apple AirPods Pro 2 gen MagSafe USB-C білі')
           assert not _brand_conflict('Apple','Навушники Apple AirPods Pro 2 USB-C MTJV3')
           assert not _brand_conflict('Apple','Apple AirPods Pro 2 USB-C MTJV3')
+          # Monitors.
           clean('Монітор Xiaomi Redmi A27Q 2025 27 2K 100 Гц','Монітор Xiaomi Redmi A27Q 27 2K IPS 100 Гц')
           conflict('Монітор Xiaomi Redmi A27Q 2025 27 2K 100 Гц','Монітор Xiaomi Redmi X27GQ 27 2K 180 Гц','product family mismatch')
+          # SSD capacity is a material variant.
+          clean('SSD Kingston NV2 1TB','SSD Kingston NV2 1TB M.2 NVMe')
+          conflict('SSD Kingston NV2 1TB','SSD Kingston NV2 2TB M.2 NVMe','size mismatch')
+          # Clothing/shoes: explicit size mismatch must reject; color can vary when mission does not constrain it.
+          clean('Кросівки Nike Air Max 270 розмір 42','Кросівки Nike Air Max 270 Black розмір 42')
+          conflict('Кросівки Nike Air Max 270 розмір 42','Кросівки Nike Air Max 270 White розмір 43','size mismatch')
+          # Perfume volume and tires dimensions should remain distinguishable variants.
+          clean('Парфуми Dior Sauvage 100 ml','Dior Sauvage Eau de Parfum 100 ml')
+          conflict('Парфуми Dior Sauvage 100 ml','Dior Sauvage Eau de Parfum 60 ml','size mismatch')
+          clean('Шина Michelin Primacy 4 205/55 R16','Michelin Primacy 4 205/55 R16 91V')
+          conflict('Шина Michelin Primacy 4 205/55 R16','Michelin Primacy 4 225/45 R17 91W','size mismatch')
+          # TV diagonal is material.
+          clean('Телевізор Samsung QN90D 55','Samsung Neo QLED QN90D 55')
+          conflict('Телевізор Samsung QN90D 55','Samsung Neo QLED QN90D 65','size mismatch')
           print('PUMA_GENERIC_IDENTITY_REGRESSIONS_OK')
           PY
       - name: XLSX reader and report smoke
