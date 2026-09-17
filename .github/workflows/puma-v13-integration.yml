@@ -49,6 +49,8 @@ jobs:
           conflict('Телевізор Samsung QN90D 55','Samsung Neo QLED QN90D 65','size/volume mismatch')
           print('PUMA_GENERIC_IDENTITY_REGRESSIONS_OK')
           PY
+      - name: Contamination regression gate
+        run: pytest -q tests/test_v13_contamination.py
       - name: XLSX reader and report smoke
         run: |
           python - <<'PY'
