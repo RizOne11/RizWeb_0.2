@@ -20,11 +20,9 @@ jobs:
           from puma_scouts.variant_engine import entity_type, variant_conflicts
           from puma_scouts.validator import _brand_conflict
           def clean(src,off):
-              c=variant_conflicts(src,off)
-              assert not c,(src,off,c)
+              c=variant_conflicts(src,off); assert not c,(src,off,c)
           def conflict(src,off,needle):
-              c=variant_conflicts(src,off)
-              assert any(needle in x for x in c),(src,off,c)
+              c=variant_conflicts(src,off); assert any(needle in x for x in c),(src,off,c)
           assert entity_type('Монітор Redmi G34WQ з вигнутим екраном 180 Гц')=='monitor'
           conflict('Samsung Galaxy A55 5G 8/256GB','Дисплей модуль для Samsung Galaxy A55','whole-product mismatch')
           conflict('Samsung Galaxy A55 5G 8/256GB','Акумулятор для Samsung Galaxy A55','whole-product mismatch')
@@ -42,13 +40,13 @@ jobs:
           clean('SSD Kingston NV2 1TB','SSD Kingston NV2 1TB M.2 NVMe')
           conflict('SSD Kingston NV2 1TB','SSD Kingston NV2 2TB M.2 NVMe','storage mismatch')
           clean('Кросівки Nike Air Max 270 розмір 42','Кросівки Nike Air Max 270 Black розмір 42')
-          conflict('Кросівки Nike Air Max 270 розмір 42','Кросівки Nike Air Max 270 White розмір 43','size mismatch')
+          conflict('Кросівки Nike Air Max 270 розмір 42','Кросівки Nike Air Max 270 White розмір 43','size/volume mismatch')
           clean('Парфуми Dior Sauvage 100 ml','Dior Sauvage Eau de Parfum 100 ml')
-          conflict('Парфуми Dior Sauvage 100 ml','Dior Sauvage Eau de Parfum 60 ml','size mismatch')
+          conflict('Парфуми Dior Sauvage 100 ml','Dior Sauvage Eau de Parfum 60 ml','size/volume mismatch')
           clean('Шина Michelin Primacy 4 205/55 R16','Michelin Primacy 4 205/55 R16 91V')
-          conflict('Шина Michelin Primacy 4 205/55 R16','Michelin Primacy 4 225/45 R17 91W','size mismatch')
+          conflict('Шина Michelin Primacy 4 205/55 R16','Michelin Primacy 4 225/45 R17 91W','size/volume mismatch')
           clean('Телевізор Samsung QN90D 55','Samsung Neo QLED QN90D 55')
-          conflict('Телевізор Samsung QN90D 55','Samsung Neo QLED QN90D 65','size mismatch')
+          conflict('Телевізор Samsung QN90D 55','Samsung Neo QLED QN90D 65','size/volume mismatch')
           print('PUMA_GENERIC_IDENTITY_REGRESSIONS_OK')
           PY
       - name: XLSX reader and report smoke
@@ -57,11 +55,8 @@ jobs:
           from openpyxl import Workbook, load_workbook
           from puma_scouts.production import read_missions, save
           wb=Workbook(); ws=wb.active; ws.append(['Артикул','Назва','Бренд','Модель']); ws.append(['SUP-001','Монітор 27 2K Xiaomi Redmi A27Q 2025','Xiaomi','P27QCB-RA']); wb.save('/tmp/in.xlsx')
-          m=read_missions('/tmp/in.xlsx')
-          assert len(m)==1 and m[0].article=='SUP-001'
+          m=read_missions('/tmp/in.xlsx'); assert len(m)==1 and m[0].article=='SUP-001'
           save([{'article':'SUP-001','name':m[0].source_data['name'],'brand':'Xiaomi','model':'P27QCB-RA','source':'prom','price':9998.0,'currency':'UAH','availability':'','found_title':'Xiaomi Redmi A27Q','url':'https://prom.ua/p/test','match':.88,'domain':'prom.ua','health':'FOUND'}],'/tmp/out.xlsx')
-          out=load_workbook('/tmp/out.xlsx',data_only=True)
-          assert {'Offers','Price summary'} <= set(out.sheetnames)
-          assert out['Price summary']['E2'].value==1
+          out=load_workbook('/tmp/out.xlsx',data_only=True); assert {'Offers','Price summary'} <= set(out.sheetnames); assert out['Price summary']['E2'].value==1
           print('PUMA_V13_XLSX_OK')
           PY
