@@ -41,8 +41,22 @@ _PART_PATTERNS = {
     "component": r"\b(?:лів(?:ий|а)|прав(?:ий|а)|лев(?:ый|ая)|прав(?:ый|ая)|left|right)\s+(?:навушник\w*|наушник\w*|earbud\w*)\b|\b(?:no[- ]?box|без\s+(?:кейса|футляра|зарядн\w+ кейса))\b",
 }
 
-_COLOR_WORDS = {"black","white","blue","green","red","yellow","violet","purple","pink","gold","silver","gray","grey","orange","brown","чорний","чорна","білий","біла","синій","синя","блакитний","блакитна","зелений","зелена","червоний","червона","жовтий","жовта","фіолетовий","фіолетова","рожевий","рожева","золотий","срібний","сірий","черный","черная","белый","белая","синий","синяя","голубой","голубая","зеленый","зеленая","красный","красная","желтый","желтая","фиолетовый","фиолетовая","розовый","розовая","золотой","серебристый","серый"}
-_STOP = {"смартфон","smartphone","монітор","монитор","monitor","навушники","наушники","headphones","earbuds","телевізор","телевизор","ноутбук","laptop","планшет","tablet","apple","samsung","xiaomi","redmi","galaxy","pro","plus","max","gen","generation","with","case","black","white","чорний","черный","білий","белый","gb","гб","5g","lte","2k","4k","ips","hdr10","usb","type","charging","magsafe"}
+_COLOR_GROUPS = {
+    "black":{"black","чорний","чорна","черный","черная"},
+    "white":{"white","білий","біла","белый","белая"},
+    "blue":{"blue","синій","синя","блакитний","блакитна","синий","синяя","голубой","голубая"},
+    "green":{"green","зелений","зелена","зеленый","зеленая"},
+    "red":{"red","червоний","червона","красный","красная"},
+    "yellow":{"yellow","жовтий","жовта","желтый","желтая"},
+    "violet":{"violet","purple","фіолетовий","фіолетова","фиолетовый","фиолетовая"},
+    "pink":{"pink","рожевий","рожева","розовый","розовая"},
+    "gold":{"gold","золотий","золотой"},
+    "silver":{"silver","срібний","серебристый"},
+    "gray":{"gray","grey","сірий","серый"},
+    "orange":{"orange"},"brown":{"brown"},
+}
+_COLOR_WORDS=set().union(*_COLOR_GROUPS.values())
+_STOP = {"смартфон","smartphone","монітор","монитор","monitor","навушники","наушники","headphones","earbuds","телевізор","телевизор","ноутбук","laptop","планшет","tablet","apple","samsung","xiaomi","redmi","galaxy","pro","plus","max","gen","generation","with","case","gb","гб","5g","lte","2k","4k","ips","hdr10","usb","type","charging","magsafe"}|_COLOR_WORDS
 
 
 def entity_type(text: str) -> str | None:
@@ -54,6 +68,9 @@ def entity_type(text: str) -> str | None:
     return None
 
 
+def _colors(text:str)->set[str]:
+    words=set(norm(text).split());return {canonical for canonical,aliases in _COLOR_GROUPS.items() if words & aliases}
+
 def _memory(text: str) -> tuple[set[int], set[int]]:
     raw=str(text or "").casefold();ram=set();storage=set()
     for a,b in re.findall(r"(?<!\d)(\d{1,2})\s*[/+]\s*(\d{2,4})\s*(?:gb|гб)?\b",raw,re.I): ram.add(int(a));storage.add(int(b))
@@ -64,10 +81,7 @@ def _memory(text: str) -> tuple[set[int], set[int]]:
 
 
 def _display_diagonal(text:str)->str|None:
-    raw=str(text or "").casefold()
-    m=re.search(r"\b(2[0-9]|3[0-9]|4[0-9]|5[0-9]|6[0-9]|7[0-9]|8[0-9]|9[0-9]|1[0-2][0-9])\s*(?:дюйм\w*|inch(?:es)?|\")?\s*$",raw,re.I)
-    return "diag:"+m.group(1) if m else None
-
+    raw=str(text or "").casefold();m=re.search(r"\b(2[0-9]|3[0-9]|4[0-9]|5[0-9]|6[0-9]|7[0-9]|8[0-9]|9[0-9]|1[0-2][0-9])\s*(?:дюйм\w*|inch(?:es)?|\")?\s*$",raw,re.I);return "diag:"+m.group(1) if m else None
 
 def _sizes(text:str)->set[str]:
     raw=str(text or "").casefold();out=set()
@@ -80,7 +94,6 @@ def _sizes(text:str)->set[str]:
         if d:out.add(d)
     return out
 
-
 def _core_tokens(text:str)->set[str]:
     raw=norm(text);out=set()
     for token in raw.split():
@@ -91,31 +104,21 @@ def _core_tokens(text:str)->set[str]:
         if re.search(r"[a-zа-яіїє]",c,re.I) and re.search(r"\d",c):out.add(c)
     return out
 
-
 def signature(text:str)->ProductSignature:
-    ram,storage=_memory(text)
-    return ProductSignature(entity=entity_type(text),core_tokens=frozenset(_core_tokens(text)),storage_gb=frozenset(storage),ram_gb=frozenset(ram),sizes=frozenset(_sizes(text)),colors=frozenset(set(norm(text).split())&_COLOR_WORDS))
+    ram,storage=_memory(text);return ProductSignature(entity=entity_type(text),core_tokens=frozenset(_core_tokens(text)),storage_gb=frozenset(storage),ram_gb=frozenset(ram),sizes=frozenset(_sizes(text)),colors=frozenset(_colors(text)))
 
-
-def _short_family(tokens:frozenset[str])->set[str]:
-    return {t for t in tokens if len(t)<=8 and re.search(r"[a-zа-яіїє]",t,re.I) and re.search(r"\d",t)}
-
+def _short_family(tokens:frozenset[str])->set[str]:return {t for t in tokens if len(t)<=8 and re.search(r"[a-zа-яіїє]",t,re.I) and re.search(r"\d",t)}
 
 def named_generations(text:str)->dict[str,int]:
-    t=norm(text);out={};words=t.split()
-    skip={"gb","гб","tb","тб","hz","гц","mm","мм","cm","см","ml","мл","usb","type","wifi","lte","розмір","размер","size"}
-    units={"gb","гб","tb","тб","hz","гц","mm","мм","cm","см","ml","мл","kg","кг","w","вт"}
+    t=norm(text);out={};words=t.split();skip={"gb","гб","tb","тб","hz","гц","mm","мм","cm","см","ml","мл","usb","type","wifi","lte","розмір","размер","size"};units={"gb","гб","tb","тб","hz","гц","mm","мм","cm","см","ml","мл","kg","кг","w","вт"}
     for i in range(len(words)-1):
         family=re.sub(r"[^a-zа-яіїє]","",words[i],flags=re.I);nxt=re.sub(r"[^0-9]","",words[i+1])
         if not family or family in skip or not nxt:continue
-        if i+2<len(words):
-            following=re.sub(r"[^a-zа-яіїє]","",words[i+2],flags=re.I)
-            if following in units:continue
+        if i+2<len(words) and re.sub(r"[^a-zа-яіїє]","",words[i+2],flags=re.I) in units:continue
         if re.fullmatch(r"\d{1,4}(?:gb|гб|tb|тб|hz|гц|mm|мм|cm|см|ml|мл|kg|кг|w|вт)",words[i+1],re.I):continue
         n=int(nxt)
         if 1<=n<=20:out[family]=n
     return out
-
 
 def generation_confirmation(expected_text:str,candidate_text:str)->tuple[bool,str|None]:
     eg,cg=named_generations(expected_text),named_generations(candidate_text)
@@ -126,10 +129,8 @@ def generation_confirmation(expected_text:str,candidate_text:str)->tuple[bool,st
     if common:return True,None
     return False,"material generation not confirmed"
 
-
 def identity_conflicts(expected_text:str,candidate_text:str)->list[str]:
-    expected,candidate=signature(expected_text),signature(candidate_text);out=[]
-    part_entities={"spare_part","accessory","component"}
+    expected,candidate=signature(expected_text),signature(candidate_text);out=[];part_entities={"spare_part","accessory","component"}
     if candidate.entity in part_entities and expected.entity not in part_entities:out.append(f"whole-product mismatch: candidate is {candidate.entity}")
     elif expected.entity and candidate.entity and expected.entity!=candidate.entity:out.append(f"entity mismatch: expected {expected.entity}, got {candidate.entity}")
     ef,cf=_short_family(expected.core_tokens),_short_family(candidate.core_tokens)
@@ -140,18 +141,17 @@ def identity_conflicts(expected_text:str,candidate_text:str)->list[str]:
         if eg[family]!=cg[family]:out.append(f"generation mismatch: {family} expected {eg[family]}, got {cg[family]}")
     return out
 
-
 def variant_conflicts(expected_text:str,candidate_text:str)->list[str]:
     expected,candidate=signature(expected_text),signature(candidate_text);out=identity_conflicts(expected_text,candidate_text)
     if expected.storage_gb and candidate.storage_gb and expected.storage_gb.isdisjoint(candidate.storage_gb):out.append(f"storage mismatch: expected {sorted(expected.storage_gb)}GB, got {sorted(candidate.storage_gb)}GB")
     if expected.ram_gb and candidate.ram_gb and expected.ram_gb.isdisjoint(candidate.ram_gb):out.append(f"RAM mismatch: expected {sorted(expected.ram_gb)}GB, got {sorted(candidate.ram_gb)}GB")
     expected_sizes=set(expected.sizes);candidate_sizes=set(candidate.sizes)
-    # Candidate titles often omit the category noun (e.g. "Samsung QN90D 65").
-    # The mission supplies the entity context, so only then interpret a trailing
-    # plausible number as a display diagonal.
     if expected.entity in {"television","monitor"}:
         ed=_display_diagonal(expected_text);cd=_display_diagonal(candidate_text)
         if ed:expected_sizes.add(ed)
         if cd:candidate_sizes.add(cd)
     if expected_sizes and candidate_sizes and expected_sizes.isdisjoint(candidate_sizes):out.append(f"size/volume mismatch: expected {sorted(expected_sizes)}, got {sorted(candidate_sizes)}")
+    # An explicitly named mission color is a material variant only when the candidate also declares a color.
+    # Missing candidate color stays unknown rather than becoming a false conflict.
+    if expected.colors and candidate.colors and expected.colors.isdisjoint(candidate.colors):out.append(f"color mismatch: expected {sorted(expected.colors)}, got {sorted(candidate.colors)}")
     return list(dict.fromkeys(out))
