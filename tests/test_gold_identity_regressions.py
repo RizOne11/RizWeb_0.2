@@ -51,6 +51,32 @@ def test_internal_supplier_article_must_not_become_discovery_query():
     assert all("INTERNAL-12345" not in q for q in queries), queries
 
 
+def test_numeric_measure_from_name_is_not_promoted_to_standalone_identifier_query():
+    mission = ProductMission(
+        article="36-031",
+        source_data={"name": "Молоток слесарный Polax 1000 г (36-031)", "brand": "Polax"},
+    )
+    queries = build_queries(mission)
+    assert queries, queries
+    assert "1000" not in queries, queries
+    assert "Polax 1000" not in queries, queries
+    assert all("36-031" not in q for q in queries), queries
+
+
+def test_explicit_numeric_ean_remains_a_valid_discovery_identifier():
+    mission = ProductMission(
+        article="ROW-77",
+        source_data={
+            "name": "Тестовый товар Example",
+            "brand": "Example",
+            "ean": "4820001234567",
+        },
+    )
+    queries = build_queries(mission)
+    assert any("4820001234567" in q for q in queries), queries
+    assert all("ROW-77" not in q for q in queries), queries
+
+
 def test_explicit_external_model_remains_a_valid_discovery_identifier():
     mission = ProductMission(
         article="ROW-9911",
