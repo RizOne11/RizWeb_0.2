@@ -72,12 +72,14 @@ def worker(job_id,input_path,limit,selected_markets,supplier):
     with _lock:
         if job_id in _running_threads:return
         _running_threads.add(job_id)
-    d=JOBS_DIR/job_id; xlsx=d/"PUMA_doPUMAgatel_market_report.xlsx"
+    d=JOBS_DIR/job_id
+    xlsx=d/"PUMA_doPUMAgatel_market_report.xlsx"
+    classic_xlsx=d/"PUMA_classic_analytical_report.xlsx"
     def progress(current,total,name,extra=None):set_job(job_id,status="running",current=current,total=total,percent=round(current/max(1,total)*100,1),current_product=name,message=extra or "Аналізуємо ринок…")
     try:
         set_job(job_id,status="running",message="Читаємо каталог…",started_at=time.time())
-        summary=run_sync(str(input_path),str(xlsx),limit=limit,selected=selected_markets,progress_cb=progress)
-        set_job(job_id,status="done",percent=100,message="Готово",finished_at=time.time(),summary=summary,xlsx_file=str(xlsx),resume_available=False)
+        summary=run_sync(str(input_path),str(xlsx),limit=limit,selected=selected_markets,progress_cb=progress,classic_output_path=str(classic_xlsx),supplier=supplier)
+        set_job(job_id,status="done",percent=100,message="Готово",finished_at=time.time(),summary=summary,xlsx_file=str(xlsx),classic_xlsx_file=str(classic_xlsx),resume_available=False)
     except Exception as e:set_job(job_id,status="error",message=f"{type(e).__name__}: {e}",finished_at=time.time(),resume_available=False)
     finally:
         with _lock:_running_threads.discard(job_id)
@@ -131,8 +133,10 @@ def job_page(job_id):
 def job_status(job_id):
     j=get_job(job_id)
     if not j:abort(404)
-    safe={k:v for k,v in j.items() if k not in {"xlsx_file","fingerprint"}}
-    if j.get("status")=="done":safe["xlsx_url"]=url_for("download_xlsx",job_id=job_id)
+    safe={k:v for k,v in j.items() if k not in {"xlsx_file","classic_xlsx_file","fingerprint"}}
+    if j.get("status")=="done":
+        safe["xlsx_url"]=url_for("download_xlsx",job_id=job_id)
+        safe["classic_xlsx_url"]=url_for("download_classic_xlsx",job_id=job_id)
     return jsonify(safe)
 @app.get("/jobs/<job_id>/xlsx")
 def download_xlsx(job_id):
@@ -141,6 +145,13 @@ def download_xlsx(job_id):
     p=Path(j.get("xlsx_file") or JOBS_DIR/job_id/"PUMA_doPUMAgatel_market_report.xlsx")
     if not p.exists():abort(404)
     return send_file(p,as_attachment=True,download_name="PUMA_doPUMAgatel_market_report.xlsx")
+@app.get("/jobs/<job_id>/classic-xlsx")
+def download_classic_xlsx(job_id):
+    j=get_job(job_id)
+    if not j or j.get("status")!="done":abort(404)
+    p=Path(j.get("classic_xlsx_file") or JOBS_DIR/job_id/"PUMA_classic_analytical_report.xlsx")
+    if not p.exists():abort(404)
+    return send_file(p,as_attachment=True,download_name="PUMA_classic_analytical_report.xlsx")
 @app.post("/api/jobs/<job_id>/cancel")
 def cancel_job(job_id):return jsonify({"ok":False,"message":"Production v1.3 runs bounded parallel products; cancel will return in the next build."}),409
 @app.post("/api/jobs/<job_id>/resume")
