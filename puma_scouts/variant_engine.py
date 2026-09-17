@@ -67,12 +67,14 @@ def _sizes(text:str)->set[str]:
     raw=str(text or "").casefold();out=set()
     for value in re.findall(r"(?<!\d)(\d{1,3}(?:[.,]\d+)?)\s*(?:inch|inches|\")",raw,re.I):out.add(value.replace(",",".")+"in")
     for value,unit in re.findall(r"(?<!\d)(\d+(?:[.,]\d+)?)\s*(mm|мм|cm|см|ml|мл|kg|кг)\b",raw,re.I):out.add(value.replace(",",".")+unit.casefold())
-    # Explicit apparel/footwear size. Bare model numbers remain core identity,
-    # while "size/розмір 42" is a material variant.
     for value in re.findall(r"\b(?:розмір|размер|size)\s*[:#-]?\s*(\d{1,3}(?:[.,]\d+)?)\b",raw,re.I):out.add("size:"+value.replace(",","."))
-    # Tire dimensions are one atomic variant; comparing isolated numbers would
-    # confuse model/generation ordinals with width/profile/rim.
     for width,profile,rim in re.findall(r"(?<!\d)(\d{3})\s*/\s*(\d{2})\s*r\s*(\d{2})(?!\d)",raw,re.I):out.add(f"tire:{width}/{profile}r{rim}")
+    # TV/monitor catalog titles commonly omit the inch mark: model + 55/65.
+    # Treat a plausible trailing diagonal as material only for display entities.
+    ent=entity_type(raw)
+    if ent in {"television","monitor"}:
+        m=re.search(r"\b(2[0-9]|3[0-9]|4[0-9]|5[0-9]|6[0-9]|7[0-9]|8[0-9]|9[0-9]|1[0-2][0-9])\s*(?:дюйм\w*|inch(?:es)?|\")?\s*$",raw,re.I)
+        if m:out.add("diag:"+m.group(1))
     return out
 
 
