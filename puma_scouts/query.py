@@ -67,7 +67,9 @@ def _without_identifier(text: str, identifier: str) -> str:
     pattern = _identifier_pattern(identifier)
     if not pattern:
         return _clean(text)
-    return _clean(pattern.sub(" ", str(text or "")))
+    value = pattern.sub(" ", str(text or ""))
+    value = re.sub(r"\(\s*\)|\[\s*\]|\{\s*\}", " ", value)
+    return _clean(value)
 
 
 def extract_identifiers(mission: ProductMission) -> list[str]:
