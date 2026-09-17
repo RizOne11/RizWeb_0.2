@@ -93,13 +93,7 @@ _load_remote_jobs()
 
 @legacy.app.get("/api/storage")
 def storage_status():
-    return jsonify(
-        {
-            "mode": _STORE.mode,
-            "durable": _STORE.enabled,
-            "last_error": _STORE.last_error,
-        }
-    )
+    return jsonify({"mode": _STORE.mode, "durable": _STORE.enabled})
 
 
 app = legacy.app
