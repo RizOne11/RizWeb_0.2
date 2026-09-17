@@ -43,11 +43,11 @@ def identifier_in_text(identifier: str, text: str) -> bool:
 
 
 def article_is_published(mission: ProductMission) -> bool:
-    """True when the supplier article is visibly part of public product identity.
+    """Whether the row article is visibly present in public identity data.
 
-    Many supplier articles are internal and must stay SKU-lock only. A short code
-    becomes usable as identity evidence only when it is explicitly published in
-    the human product name/title or duplicated in a declared identifier field.
+    This is validation metadata only. It must never make the supplier article a
+    Discovery query. Discovery identifies the physical product from descriptive
+    fields and explicit external identifiers such as MPN/EAN/GTIN/model.
     """
     article = _clean(mission.article)
     if len(_compact(article)) < 4:
@@ -73,44 +73,57 @@ def _without_identifier(text: str, identifier: str) -> str:
 
 
 def extract_identifiers(mission: ProductMission) -> list[str]:
+    """Return external product identifiers, explicitly excluding row article."""
     data = {str(k).lower(): v for k, v in mission.source_data.items()}
     found = []
+    article_compact = _compact(mission.article)
+
     for key in _ID_KEYS:
         value = _clean(data.get(key))
-        if value and value.casefold() != mission.article.casefold() and value not in found:
+        if value and _compact(value) != article_compact and value not in found:
             found.append(value)
+
     corpus = " ".join(_clean(v) for v in mission.source_data.values() if isinstance(v, (str, int)))
     for token in re.findall(r"\b(?=[A-ZА-ЯІЇЄ0-9-]{4,}\b)(?=[A-ZА-ЯІЇЄ0-9-]*\d)[A-ZА-ЯІЇЄ0-9-]+\b", corpus.upper()):
-        if token.casefold() != mission.article.casefold() and token not in found:
+        if _compact(token) != article_compact and token not in found:
             found.append(token)
     return found[:12]
 
 
 def generate_queries(mission: ProductMission) -> list[str]:
+    """Build Discovery queries without ever using the supplier row article.
+
+    `mission.article` is a row/mission anchor. We strip it from descriptive text
+    even when the supplier printed it inside the product name. Search is driven
+    by name/brand plus independent external identifiers (MPN/EAN/GTIN/model/etc.).
+    """
     data = mission.source_data
     name = _first(data, _NAME_KEYS)
     brand = _first(data, _BRAND_KEYS)
     identifiers = extract_identifiers(mission)
-    queries = []
+    queries: list[str] = []
 
-    def add(value):
+    def add(value: Any) -> None:
         value = _clean(value)
-        if value and value.casefold() != mission.article.casefold() and value.casefold() not in {q.casefold() for q in queries}:
+        if mission.article and identifier_in_text(mission.article, value):
+            value = _without_identifier(value, mission.article)
+        if not value:
+            return
+        folded = value.casefold()
+        if folded not in {q.casefold() for q in queries}:
             queries.append(value)
 
-    # If a short article is visibly published in the product title, keep a
-    # descriptive title query with that code removed. CatalogScout deliberately
-    # filters supplier-article-bearing queries, so without this fallback products
-    # such as Polax 35-005 can end up with zero discovery queries.
-    if name and article_is_published(mission):
-        add(_without_identifier(name, mission.article))
-
-    # Preserve the existing title-first discovery behaviour for normal products.
+    # The descriptive name remains useful; only the supplier article is removed.
     add(name)
+
+    # Independent product identifiers are valid Discovery signals. The row
+    # article itself has already been excluded by extract_identifiers().
     for identifier in identifiers[:6]:
         add(identifier)
         if brand:
             add(f"{brand} {identifier}")
+
     if brand and name:
         add(" ".join([brand, *name.split()[:7]]))
+
     return queries[:12]
