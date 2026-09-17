@@ -1,0 +1,68 @@
+name: PUMA Gold Live Canary
+
+on:
+  push:
+    branches: [puma-gold-regression]
+    paths:
+      - '.github/workflows/puma-gold-live-canary.yml'
+
+jobs:
+  short-sku-live-canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      PYTHONPATH: .
+      PUMA_SOURCE_WALL_TIMEOUT: '70'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - name: Scan known short-SKU false negatives
+        shell: bash
+        run: |
+          python - <<'PY'
+          import asyncio, json, time
+          from puma_scouts.models import ProductMission
+          from puma_scouts.production import scan
+          from puma_scouts.scouts.catalog import PromScout
+
+          missions = [
+              ProductMission(article='35-005', source_data={'name':'Бокорезы Polax 180 мм (35-005)','brand':'Polax'}),
+              ProductMission(article='01-0177', source_data={'name':'Ящик для инструмента Polax 19" (01-0177)','brand':'Polax'}),
+              ProductMission(article='36-031', source_data={'name':'Молоток слесарный Polax 1000 г (36-031)','brand':'Polax'}),
+          ]
+
+          async def one(mission):
+              queries = await PromScout(timeout=10).generate_queries(mission)
+              started = time.monotonic()
+              rows = await scan(mission, ['prom','epicentr','hotline','web_shops'])
+              return {
+                  'article': mission.article,
+                  'queries': queries,
+                  'seconds': round(time.monotonic()-started, 2),
+                  'offers': len(rows),
+                  'sources': sorted({r['source'] for r in rows}),
+                  'rows': [
+                      {
+                          'source': r['source'],
+                          'price': r.get('price'),
+                          'currency': r.get('currency'),
+                          'title': r.get('found_title'),
+                          'url': r.get('url'),
+                          'match': r.get('match'),
+                      }
+                      for r in rows
+                  ],
+              }
+
+          async def main():
+              return await asyncio.gather(*(one(m) for m in missions))
+
+          result = asyncio.run(main())
+          print('PUMA_SHORT_SKU_CANARY='+json.dumps(result, ensure_ascii=False), flush=True)
+          for item in result:
+              if not item['queries']:
+                  raise SystemExit('ZERO_QUERIES:'+item['article'])
+          PY
