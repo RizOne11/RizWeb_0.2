@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "source_job": "8a33eb4ada73",
+  "purpose": "Stable identity/discovery regression corpus. Live prices and exact offer counts are intentionally not frozen.",
+  "products": [
+    {"article":"UDFHDH7S9SKFJ","name":"PERCIRION microSD 16GB","baseline_status":"FOUND","gold_role":"known_found"},
+    {"article":"JBLC50HIRED","name":"JBL C50HI Red","baseline_status":"FOUND","gold_role":"known_found"},
+    {"article":"676A2AA","name":"HyperX Cloud Stinger 2 Wireless","baseline_status":"NOT_FOUND","gold_role":"known_false_negative"},
+    {"article":"30455_2849345","name":"Fantech HQ53 Flash","baseline_status":"NOT_FOUND","gold_role":"known_false_negative"},
+    {"article":"1724889898","name":"Emby CHT-500","baseline_status":"FOUND","gold_role":"known_found"},
+    {"article":"18606","name":"MAST GROUP YH3000","baseline_status":"NOT_FOUND","gold_role":"known_false_negative"},
+    {"article":"1900284922","name":"Acecea PT-3300","baseline_status":"NOT_FOUND","gold_role":"known_false_negative"},
+    {"article":"2005912565","name":"GREELITE SN99","baseline_status":"NOT_FOUND","gold_role":"known_false_negative"},
+    {"article":"36-031","name":"Polax hammer 1000g","baseline_status":"NOT_FOUND","gold_role":"short_public_sku"},
+    {"article":"35-005","name":"Polax cutters 180mm (35-005)","baseline_status":"NOT_FOUND","gold_role":"short_public_sku_zero_queries"},
+    {"article":"01-0177","name":"Polax toolbox 19 inch (01-0177)","baseline_status":"NOT_FOUND","gold_role":"short_public_sku_validator"},
+    {"article":"SGR-70","name":"Soygen diesel generator SGR-70","baseline_status":"FOUND","gold_role":"known_found"},
+    {"article":"125260","name":"Nikura heater","baseline_status":"NOT_FOUND","gold_role":"known_false_negative"},
+    {"article":"05060948065887","name":"XON PowerBoost","baseline_status":"NOT_FOUND","gold_role":"timeout_stress"},
+    {"article":"Buds3-black","name":"Inspire Buds3 Black","baseline_status":"NOT_FOUND","gold_role":"timeout_stress"}
+  ]
+}
