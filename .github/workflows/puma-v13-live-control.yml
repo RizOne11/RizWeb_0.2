@@ -19,7 +19,7 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - name: Trace Epicentr Nuxt price state
+      - name: Trace Epicentr Nuxt price loader
         run: |
           python - <<'PY'
           import html,json,re,httpx
@@ -27,34 +27,40 @@ jobs:
           h={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128 Safari/537.36','Accept-Language':'uk-UA,uk;q=0.9,ru;q=0.7,en;q=0.5','Referer':'https://epicentrk.ua/'}
           u='https://epicentrk.ua/shop/smartfon-samsung-galaxy-a55-5g-8-256gb-light-violet-sm-a556blvceuc.html'
           r=httpx.get(u,headers=h,follow_redirects=True,timeout=20); page=html.unescape(r.text).replace('\\/','/')
-          needles=['showPrice','groupParamsPrice','competitors_prices','productId','productModelId']
-          out=[]
           scripts=[]
           for src in re.findall(r'<script[^>]+src=["\']([^"\']+)["\']',page,re.I):
             su=urljoin(u,src)
             if su not in scripts:scripts.append(su)
+          needles=['pages/shop/product/price','params.price','showPrice','availabilityStatus','productModelId','productId','fetchPrice','getPrice','loadPrice','priceData']
+          hits=[]; urls=set()
           for su in scripts:
-            try: js=httpx.get(su,headers=h,follow_redirects=True,timeout=12).text
+            try:
+              x=httpx.get(su,headers=h,follow_redirects=True,timeout=12); js=x.text
             except Exception: continue
+            if not any(n in js for n in needles): continue
             for needle in needles:
-              pos=0
-              while True:
+              pos=0; count=0
+              while count<8:
                 i=js.find(needle,pos)
                 if i<0: break
-                snippet=js[max(0,i-900):min(len(js),i+1400)]
-                out.append({'script':su,'needle':needle,'snippet':snippet})
-                pos=i+len(needle)
-                if sum(1 for x in out if x['needle']==needle)>=12: break
-          print('EPICENTR_NUXT_PRICE_CONTEXT='+json.dumps(out[:45],ensure_ascii=False),flush=True)
-          ids=sorted(set(re.findall(r'["\']?productId["\']?\s*[:=]\s*["\']?([0-9]{4,})',page,re.I)))
-          probes=[]
-          for pid in ids[:8]:
-            for path in [f'/api/v1/competitors_prices/{pid}',f'/api/v1/competitors_prices/?productId={pid}',f'/api/v1/competitors_prices/?product_id={pid}']:
-              try:
-                x=httpx.get(urljoin(u,path),headers=h,follow_redirects=True,timeout=10)
-                probes.append({'pid':pid,'path':path,'status':x.status_code,'type':x.headers.get('content-type'),'body':x.text[:700]})
-              except Exception as e: probes.append({'pid':pid,'path':path,'error':type(e).__name__+': '+str(e)})
-          print('EPICENTR_PRICE_API_PROBES='+json.dumps(probes,ensure_ascii=False),flush=True)
+                sn=js[max(0,i-1800):min(len(js),i+2600)]
+                hits.append({'script':su,'needle':needle,'snippet':sn})
+                for z in re.findall(r'["\']((?:https?:)?//[^"\']+|/[^"\']*(?:api|price|product|availability)[^"\']*)["\']',sn,re.I):
+                  if len(z)<400: urls.add(z)
+                pos=i+len(needle); count+=1
+          print('EPICENTR_PRICE_LOADER_CONTEXT='+json.dumps(hits[:70],ensure_ascii=False),flush=True)
+          print('EPICENTR_PRICE_RELATED_URLS='+json.dumps(sorted(urls)[:120],ensure_ascii=False),flush=True)
+          # Structural clues from SSR around the exact internal IDs/state.
+          state=[]
+          for needle in ['003889803','8154167','pages/shop/product/price','productPrice']:
+            pos=0
+            while True:
+              i=page.find(needle,pos)
+              if i<0: break
+              state.append({'needle':needle,'snippet':page[max(0,i-1400):min(len(page),i+2200)]})
+              pos=i+len(needle)
+              if sum(1 for z in state if z['needle']==needle)>=6: break
+          print('EPICENTR_SSR_PRICE_STATE='+json.dumps(state[:24],ensure_ascii=False),flush=True)
           PY
       - name: Trace Xiaomi discovery and validation
         run: |
