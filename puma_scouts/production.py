@@ -1,11 +1,11 @@
 from __future__ import annotations
-import asyncio,csv,re,statistics,xml.etree.ElementTree as ET
+import asyncio,csv,os,re,statistics,xml.etree.ElementTree as ET
 from collections import Counter
 from pathlib import Path
 from typing import Any,Callable
 from openpyxl import Workbook,load_workbook
 from .classic_report import save_classic
-from .models import IdentityConfidence,ProductMission,Verdict
+from .models import IdentityConfidence,ProductMission,Verdict,ScanHealth,ScanReport
 
 def _text(v:Any)->str:return "" if v is None else str(v).strip()
 ALIASES={
@@ -75,35 +75,69 @@ def scouts(selected:list[str]|None=None):
     from .scouts.catalog import HotlineScout,PromScout
     from .scouts.epicentr import EpicentrScout
     from .scouts.web_shops import WebShopsScout
-    all_scouts={"epicentr":EpicentrScout(timeout=8,max_candidates_per_query=10),"prom":PromScout(timeout=8,max_candidates_per_query=10),"hotline":HotlineScout(timeout=8,max_candidates_per_query=10),"web_shops":WebShopsScout(timeout=8,max_candidates_per_query=12,max_per_domain=2)}
+    all_scouts={
+        "epicentr":EpicentrScout(timeout=8,max_candidates_per_query=10),
+        "prom":PromScout(timeout=8,max_candidates_per_query=10),
+        "hotline":HotlineScout(timeout=8,max_candidates_per_query=10),
+        "web_shops":WebShopsScout(timeout=8,max_candidates_per_query=12,max_per_domain=2),
+    }
     wanted=set(selected or all_scouts);return [s for k,s in all_scouts.items() if k in wanted]
-async def _scan_source(scout,mission:ProductMission,wall_timeout:float=75.0):
-    try:return scout,await asyncio.wait_for(scout.scan(mission),timeout=wall_timeout)
-    except (asyncio.TimeoutError,Exception):return scout,None
+
+SOURCE_WALL_TIMEOUT=float(os.getenv("PUMA_SOURCE_WALL_TIMEOUT","70"))
+PRODUCT_CONCURRENCY=max(1,min(int(os.getenv("PUMA_PRODUCT_CONCURRENCY","1")),4))
+
+async def _scan_source(scout,mission:ProductMission,wall_timeout:float=SOURCE_WALL_TIMEOUT):
+    try:
+        report=await asyncio.wait_for(scout.scan(mission),timeout=wall_timeout)
+        return scout,report
+    except asyncio.TimeoutError:
+        return scout,ScanReport(
+            article=mission.article,marketplace=scout.marketplace,health=ScanHealth.ACCESS_LIMITED,
+            errors=[f"wall_timeout_{wall_timeout:g}s"]
+        )
+    except Exception as exc:
+        return scout,ScanReport(
+            article=mission.article,marketplace=scout.marketplace,health=ScanHealth.SCOUT_ERROR,
+            errors=[f"{type(exc).__name__}: {exc}"]
+        )
+
 def _title_signature(title:str)->str:
     t=title.casefold();t=re.sub(r"\([^)]*\)$","",t);t=re.sub(r"\b(?:монітор|монитор)\b"," ",t);return re.sub(r"[^a-zа-яіїєґ0-9]+"," ",t).strip()
 def _prom_identity(x):return (x["article"],x["source"],x["price"],_title_signature(x["found_title"]))
+
+def _reason_summary(report)->str:
+    reasons=Counter()
+    for item in report.offers:
+        for reason in list(item.conflicts or [])+list(item.rejection_reasons or []):
+            if reason: reasons[reason]+=1
+    return " | ".join(f"{reason} ×{count}" for reason,count in reasons.most_common(5))
 
 async def scan_detailed(mission:ProductMission,selected:list[str]|None=None)->tuple[list[dict[str,Any]],dict[str,Any]]:
     rows=[];diagnostics={};results=await asyncio.gather(*[_scan_source(s,mission) for s in scouts(selected)])
     for scout,report in results:
         source=scout.marketplace.value
-        if report is None:
-            diagnostics[source]={"health":"ERROR","candidates":0,"accepted":0,"queries":0,"pages":0,"errors":["timeout_or_exception"]}
-            continue
         accepted=0
+        verdicts=Counter()
+        identities=Counter()
         for item in report.offers:
+            verdicts[item.verdict.value]+=1
+            if item.identity_confidence:identities[item.identity_confidence.value]+=1
             if item.verdict!=Verdict.PASS or item.identity_confidence not in {None,IdentityConfidence.CONFIRMED,IdentityConfidence.PROBABLE}:continue
             accepted+=1;o=item.offer
-            rows.append({"article":mission.article,"name":mission.source_data.get("name",""),"brand":mission.source_data.get("brand",""),"model":mission.source_data.get("model",""),"own_price":mission.source_data.get("own_price",""),"source":source,"price":float(o.price) if o.price is not None else None,"currency":o.currency,"availability":o.availability or "","found_title":o.title,"url":str(o.url),"match":round(item.score,3),"identity_confidence":item.identity_confidence.value if item.identity_confidence else "LEGACY_PASS","domain":o.attributes.get("source_domain","") or str(o.url).split('/')[2],"health":report.health.value})
+            rows.append({
+                "article":mission.article,"name":mission.source_data.get("name",""),"brand":mission.source_data.get("brand",""),
+                "model":mission.source_data.get("model",""),"own_price":mission.source_data.get("own_price",""),"source":source,
+                "price":float(o.price) if o.price is not None else None,"currency":o.currency,"availability":o.availability or "",
+                "found_title":o.title,"url":str(o.url),"match":round(item.score,3),
+                "identity_confidence":item.identity_confidence.value if item.identity_confidence else "LEGACY_PASS",
+                "domain":o.attributes.get("source_domain","") or str(o.url).split('/')[2],"health":report.health.value
+            })
         diagnostics[source]={
-            "health":report.health.value,
-            "queries":report.queries_generated,
-            "pages":report.pages_scanned,
-            "candidates":report.candidates_collected,
-            "seen":report.candidates_seen,
-            "accepted":accepted,
-            "errors":list(report.errors or []),
+            "health":report.health.value,"queries":report.queries_generated,"pages":report.pages_scanned,
+            "candidates":report.candidates_collected,"seen":report.candidates_seen,"accepted":accepted,
+            "pass":verdicts.get("PASS",0),"conflict":verdicts.get("CONFLICT",0),"reject":verdicts.get("REJECT",0),
+            "ambiguous":identities.get("AMBIGUOUS",0),"identity_conflict":identities.get("CONFLICT",0),
+            "reasons":_reason_summary(report),"errors":list(report.errors or []),
         }
     dedup={}
     for x in rows:
@@ -124,6 +158,7 @@ def _market_summary(offers):
         if x.get("price") is None:continue
         groups.setdefault(x["source"],[]).append(x["price"])
     return " | ".join(f"{src}: "+", ".join(f"{price:g} грн"+(f" ×{prices.count(price)}" if prices.count(price)>1 else "") for price in sorted(set(prices))) for src,prices in sorted(groups.items()))
+
 def product_report(missions:list[ProductMission],rows:list[dict[str,Any]],diagnostics_by_article:dict[str,dict[str,Any]]|None=None)->list[dict[str,Any]]:
     by_article={}
     for x in rows:by_article.setdefault(x["article"],[]).append(x)
@@ -141,28 +176,38 @@ def product_report(missions:list[ProductMission],rows:list[dict[str,Any]],diagno
             "diagnostics":diagnostics_by_article.get(m.article,{})
         })
     return report
+
 def save(rows:list[dict[str,Any]],output:str,missions:list[ProductMission]|None=None,diagnostics_by_article:dict[str,dict[str,Any]]|None=None)->None:
-    missions=missions or [];products=product_report(missions,rows,diagnostics_by_article) if missions else [];wb=Workbook();overview=wb.active;overview.title="Результат";overview.append(["Артикул","Назва","Бренд","Модель","Вхідна ціна","Статус","Маркетплейс → ціна","Мін. ринку","Медіана","Середня","Макс. ринку","Карток","Джерел","CONFIRMED","PROBABLE"])
+    missions=missions or [];products=product_report(missions,rows,diagnostics_by_article) if missions else [];wb=Workbook();overview=wb.active;overview.title="Результат"
+    overview.append(["Артикул","Назва","Бренд","Модель","Вхідна ціна","Статус","Маркетплейс → ціна","Мін. ринку","Медіана","Середня","Макс. ринку","Карток","Джерел","CONFIRMED","PROBABLE"])
     for p in products:overview.append([p[k] for k in ("article","name","brand","model","own_price","status","marketplaces","min_price","median_price","avg_price","max_price","offers","sources","confirmed","probable")])
     overview.freeze_panes="A2";overview.auto_filter.ref=overview.dimensions
-    ws=wb.create_sheet("Пропозиції");keys=("article","name","brand","model","own_price","source","price","currency","availability","found_title","url","match","identity_confidence","domain","health");ws.append(["Артикул","Назва","Бренд","Модель","Вхідна ціна","Джерело","Ціна","Валюта","Наявність","Знайдена назва","URL","Match","Identity Confidence","Домен","Health"]);defaults={"identity_confidence":"LEGACY_PASS","domain":"","health":"","own_price":""}
+    ws=wb.create_sheet("Пропозиції");keys=("article","name","brand","model","own_price","source","price","currency","availability","found_title","url","match","identity_confidence","domain","health")
+    ws.append(["Артикул","Назва","Бренд","Модель","Вхідна ціна","Джерело","Ціна","Валюта","Наявність","Знайдена назва","URL","Match","Identity Confidence","Домен","Health"]);defaults={"identity_confidence":"LEGACY_PASS","domain":"","health":"","own_price":""}
     for x in rows:ws.append([x.get(k,defaults.get(k,"")) for k in keys])
     ws.freeze_panes="A2";ws.auto_filter.ref=ws.dimensions
     summary=wb.create_sheet("Ціна → картки");summary.append(["Артикул","Назва","Джерело","Ціна","Карток"]);groups=Counter((x["article"],x["name"],x["source"],x["price"]) for x in rows if x.get("price") is not None)
     for key,count in sorted(groups.items(),key=lambda z:(z[0][0],z[0][2],z[0][3])):summary.append([*key,count])
     summary.freeze_panes="A2";summary.auto_filter.ref=summary.dimensions
-    diag=wb.create_sheet("Discovery діагностика");diag.append(["Артикул","Товар","Джерело","Health","Запитів","Сторінок","Кандидатів","Seen","Прийнято","Помилки"])
+    diag=wb.create_sheet("Discovery діагностика")
+    diag.append(["Артикул","Товар","Джерело","Health","Запитів","Сторінок","Кандидатів","Seen","Прийнято","PASS","CONFLICT","REJECT","AMBIGUOUS","ID CONFLICT","Причини","Помилки"])
     name_by_article={m.article:m.source_data.get("name","") for m in missions}
     for article,sources in (diagnostics_by_article or {}).items():
-        for src,d in sources.items():diag.append([article,name_by_article.get(article,""),src,d.get("health",""),d.get("queries",0),d.get("pages",0),d.get("candidates",0),d.get("seen",0),d.get("accepted",0)," | ".join(d.get("errors") or [])])
+        for src,d in sources.items():
+            diag.append([
+                article,name_by_article.get(article,""),src,d.get("health",""),d.get("queries",0),d.get("pages",0),
+                d.get("candidates",0),d.get("seen",0),d.get("accepted",0),d.get("pass",0),d.get("conflict",0),
+                d.get("reject",0),d.get("ambiguous",0),d.get("identity_conflict",0),d.get("reasons",""),
+                " | ".join(d.get("errors") or [])
+            ])
     diag.freeze_panes="A2";diag.auto_filter.ref=diag.dimensions;wb.save(output)
 
 async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[str]|None=None,progress_cb:Callable|None=None,classic_output_path:str|None=None,supplier:str="")->dict[str,Any]:
-    missions=read_missions(input_path,limit);rows=[];diagnostics_by_article={};semaphore=asyncio.Semaphore(4);completed=0;lock=asyncio.Lock()
+    missions=read_missions(input_path,limit);rows=[];diagnostics_by_article={};semaphore=asyncio.Semaphore(PRODUCT_CONCURRENCY);completed=0;lock=asyncio.Lock()
     async def one(m):
         nonlocal completed
         async with semaphore:
-            if progress_cb:progress_cb(completed,len(missions),m.source_data.get("name",m.article),"Шукаємо реальні пропозиції…")
+            if progress_cb:progress_cb(completed,len(missions),m.source_data.get("name",m.article),f"Шукаємо реальні пропозиції… (паралельність {PRODUCT_CONCURRENCY})")
             found,diag=await scan_detailed(m,selected)
             async with lock:
                 completed+=1
@@ -173,7 +218,8 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
     products=product_report(missions,rows,diagnostics_by_article);save(rows,output_path,missions,diagnostics_by_article)
     if classic_output_path:save_classic(products,classic_output_path,supplier=supplier)
     if progress_cb:progress_cb(len(missions),len(missions),"Готово","Формуємо звіти…")
-    found=sum(1 for p in products if p["status"]=="FOUND");confidence=Counter(x.get('identity_confidence','LEGACY_PASS') for x in rows)
+    found=sum(1 for p in products if p["status"]=="FOUND");confidence=Counter(x.get("identity_confidence","LEGACY_PASS") for x in rows)
     web_products=[{k:v for k,v in p.items() if k!="offer_rows"}|{"offers_detail":p["offer_rows"]} for p in products]
-    return {"products":len(missions),"offers":len(rows),"found_products":found,"found_pct":round(found/max(1,len(missions))*100,1),"sources":len({x['source'] for x in rows}),"confirmed":confidence.get("CONFIRMED",0),"probable":confidence.get("PROBABLE",0),"product_results":web_products}
+    return {"products":len(missions),"offers":len(rows),"found_products":found,"found_pct":round(found/max(1,len(missions))*100,1),"sources":len({x["source"] for x in rows}),"confirmed":confidence.get("CONFIRMED",0),"probable":confidence.get("PROBABLE",0),"product_results":web_products}
+
 def run_sync(input_path:str,output_path:str,**kwargs):return asyncio.run(run(input_path,output_path,**kwargs))
