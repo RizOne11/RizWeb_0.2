@@ -1,0 +1,96 @@
+name: PUMA durable live test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/puma-durable-live-test.yml'
+
+jobs:
+  durable-live-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Wait for live durable storage
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE='https://rizweb-0-2.onrender.com'
+          for i in $(seq 1 90); do
+            body="$(curl -fsS "$BASE/api/storage" || true)"
+            echo "storage=$body"
+            if python - <<'PY' "$body"
+import json, sys
+try:
+    d=json.loads(sys.argv[1])
+    raise SystemExit(0 if d.get('mode')=='s3' and d.get('durable') is True else 1)
+except Exception:
+    raise SystemExit(1)
+PY
+            then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo 'Timed out waiting for durable live service' >&2
+          exit 1
+
+      - name: Create real live job and download reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE='https://rizweb-0-2.onrender.com'
+          cat > catalog.csv <<'CSV'
+          Код товара;Категория;Артикул;Название;Цена;Старая цена;Наличие;Производитель
+          002288;Мониторы;P27QCB-RA;Монитор Xiaomi Redmi A27Q 2025;9000;;1;Xiaomi
+          CSV
+
+          curl -fsS -D headers.txt -o /dev/null \
+            -F 'catalog=@catalog.csv;type=text/csv' \
+            -F 'supplier=PUMA durability canary' \
+            -F 'limit=1' \
+            -F 'marketplaces=prom' \
+            -F 'marketplaces=epicentr' \
+            -F 'marketplaces=hotline' \
+            -F 'marketplaces=web_shops' \
+            "$BASE/analyze"
+
+          location="$(awk 'BEGIN{IGNORECASE=1} /^location:/{gsub("\r",""); print $2}' headers.txt | tail -1)"
+          echo "location=$location"
+          jid="$(printf '%s' "$location" | sed -E 's#^.*/jobs/([0-9a-f]+).*#\1#')"
+          test -n "$jid"
+          echo "PUMA_DURABLE_JOB_ID=$jid"
+
+          for i in $(seq 1 180); do
+            curl -fsS "$BASE/api/jobs/$jid" -o status.json
+            cat status.json
+            status="$(python - <<'PY'
+import json
+with open('status.json','r',encoding='utf-8') as f:
+    print(json.load(f).get('status',''))
+PY
+)"
+            if [ "$status" = done ]; then
+              break
+            fi
+            if [ "$status" = error ]; then
+              echo 'Job failed' >&2
+              exit 1
+            fi
+            sleep 5
+          done
+
+          test "$(python - <<'PY'
+import json
+with open('status.json','r',encoding='utf-8') as f:
+    print(json.load(f).get('status',''))
+PY
+)" = done
+
+          curl -fsS "$BASE/jobs/$jid/xlsx" -o market.xlsx
+          curl -fsS "$BASE/jobs/$jid/classic-xlsx" -o classic.xlsx
+          test -s market.xlsx
+          test -s classic.xlsx
+          echo "MARKET_XLSX_BYTES=$(stat -c%s market.xlsx)"
+          echo "CLASSIC_XLSX_BYTES=$(stat -c%s classic.xlsx)"
+          sha256sum market.xlsx classic.xlsx
