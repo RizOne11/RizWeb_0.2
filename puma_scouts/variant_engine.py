@@ -63,18 +63,21 @@ def _memory(text: str) -> tuple[set[int], set[int]]:
     return ram,storage
 
 
+def _display_diagonal(text:str)->str|None:
+    raw=str(text or "").casefold()
+    m=re.search(r"\b(2[0-9]|3[0-9]|4[0-9]|5[0-9]|6[0-9]|7[0-9]|8[0-9]|9[0-9]|1[0-2][0-9])\s*(?:дюйм\w*|inch(?:es)?|\")?\s*$",raw,re.I)
+    return "diag:"+m.group(1) if m else None
+
+
 def _sizes(text:str)->set[str]:
     raw=str(text or "").casefold();out=set()
     for value in re.findall(r"(?<!\d)(\d{1,3}(?:[.,]\d+)?)\s*(?:inch|inches|\")",raw,re.I):out.add(value.replace(",",".")+"in")
     for value,unit in re.findall(r"(?<!\d)(\d+(?:[.,]\d+)?)\s*(mm|мм|cm|см|ml|мл|kg|кг)\b",raw,re.I):out.add(value.replace(",",".")+unit.casefold())
     for value in re.findall(r"\b(?:розмір|размер|size)\s*[:#-]?\s*(\d{1,3}(?:[.,]\d+)?)\b",raw,re.I):out.add("size:"+value.replace(",","."))
     for width,profile,rim in re.findall(r"(?<!\d)(\d{3})\s*/\s*(\d{2})\s*r\s*(\d{2})(?!\d)",raw,re.I):out.add(f"tire:{width}/{profile}r{rim}")
-    # TV/monitor catalog titles commonly omit the inch mark: model + 55/65.
-    # Treat a plausible trailing diagonal as material only for display entities.
-    ent=entity_type(raw)
-    if ent in {"television","monitor"}:
-        m=re.search(r"\b(2[0-9]|3[0-9]|4[0-9]|5[0-9]|6[0-9]|7[0-9]|8[0-9]|9[0-9]|1[0-2][0-9])\s*(?:дюйм\w*|inch(?:es)?|\")?\s*$",raw,re.I)
-        if m:out.add("diag:"+m.group(1))
+    if entity_type(raw) in {"television","monitor"}:
+        d=_display_diagonal(raw)
+        if d:out.add(d)
     return out
 
 
@@ -142,5 +145,13 @@ def variant_conflicts(expected_text:str,candidate_text:str)->list[str]:
     expected,candidate=signature(expected_text),signature(candidate_text);out=identity_conflicts(expected_text,candidate_text)
     if expected.storage_gb and candidate.storage_gb and expected.storage_gb.isdisjoint(candidate.storage_gb):out.append(f"storage mismatch: expected {sorted(expected.storage_gb)}GB, got {sorted(candidate.storage_gb)}GB")
     if expected.ram_gb and candidate.ram_gb and expected.ram_gb.isdisjoint(candidate.ram_gb):out.append(f"RAM mismatch: expected {sorted(expected.ram_gb)}GB, got {sorted(candidate.ram_gb)}GB")
-    if expected.sizes and candidate.sizes and expected.sizes.isdisjoint(candidate.sizes):out.append(f"size/volume mismatch: expected {sorted(expected.sizes)}, got {sorted(candidate.sizes)}")
+    expected_sizes=set(expected.sizes);candidate_sizes=set(candidate.sizes)
+    # Candidate titles often omit the category noun (e.g. "Samsung QN90D 65").
+    # The mission supplies the entity context, so only then interpret a trailing
+    # plausible number as a display diagonal.
+    if expected.entity in {"television","monitor"}:
+        ed=_display_diagonal(expected_text);cd=_display_diagonal(candidate_text)
+        if ed:expected_sizes.add(ed)
+        if cd:candidate_sizes.add(cd)
+    if expected_sizes and candidate_sizes and expected_sizes.isdisjoint(candidate_sizes):out.append(f"size/volume mismatch: expected {sorted(expected_sizes)}, got {sorted(candidate_sizes)}")
     return list(dict.fromkeys(out))
