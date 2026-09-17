@@ -1,0 +1,99 @@
+name: PUMA Production Canary Run 2
+
+on:
+  push:
+    branches: [puma-production-canary-run2]
+    paths:
+      - '.github/workflows/puma-production-canary-run2.yml'
+
+jobs:
+  production-canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install openpyxl
+      - name: Run live 3-product canary
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE='https://rizweb-0-2.onrender.com'
+
+          printf '%s\n' \
+            'Артикул;Название;Цена;Производитель' \
+            '35-005;Бокорезы Polax 180 мм (35-005);250;Polax' \
+            '01-0177;Ящик для инструмента Polax 19" (01-0177);850;Polax' \
+            '36-031;Молоток слесарный Polax 1000 г (36-031);500;Polax' > catalog.csv
+
+          curl -fsS -D headers.txt -o /dev/null \
+            -F 'catalog=@catalog.csv;type=text/csv' \
+            -F 'supplier=PUMA production canary run 2' \
+            -F 'limit=3' \
+            -F 'marketplaces=prom' \
+            -F 'marketplaces=epicentr' \
+            -F 'marketplaces=hotline' \
+            -F 'marketplaces=web_shops' \
+            "$BASE/analyze"
+
+          location="$(awk 'BEGIN{IGNORECASE=1} /^location:/{gsub("\r",""); print $2}' headers.txt | tail -1)"
+          jid="$(printf '%s' "$location" | sed -E 's#^.*/jobs/([0-9a-f]+).*#\1#')"
+          test -n "$jid"
+          echo "PUMA_CANARY_RUN2_JOB_ID=$jid"
+
+          status=''
+          for i in $(seq 1 120); do
+            curl -fsS "$BASE/api/jobs/$jid" -o status.json
+            status="$(python -c 'import json; print(json.load(open("status.json",encoding="utf-8")).get("status",""))')"
+            echo "job=$jid status=$status"
+            if [ "$status" = done ]; then break; fi
+            if [ "$status" = error ] || [ "$status" = interrupted ]; then cat status.json; exit 1; fi
+            sleep 5
+          done
+          test "$status" = done
+
+          python - <<'PY'
+          import json
+          data=json.load(open('status.json', encoding='utf-8'))
+          summary=data.get('summary') or {}
+          print('PUMA_SUMMARY='+json.dumps({
+              'job_id': data.get('id'),
+              'engine_build': data.get('engine_build'),
+              'found_products': summary.get('found_products'),
+              'found_pct': summary.get('found_pct'),
+              'offers': summary.get('offers'),
+              'sources': summary.get('sources'),
+          }, ensure_ascii=False))
+          products={p.get('article'):p for p in summary.get('product_results',[])}
+          for article in ('35-005','01-0177','36-031'):
+              p=products.get(article,{})
+              diag=p.get('diagnostics') or {}
+              compact={src:{
+                  'health':d.get('health'),
+                  'queries':d.get('queries'),
+                  'pages':d.get('pages'),
+                  'candidates':d.get('candidates'),
+                  'seen':d.get('seen'),
+                  'accepted':d.get('accepted'),
+                  'errors':d.get('errors'),
+              } for src,d in diag.items()}
+              print('PUMA_PRODUCT='+json.dumps({
+                  'article':article,
+                  'status':p.get('status'),
+                  'offers':p.get('offers'),
+                  'sources':p.get('sources'),
+                  'marketplaces':p.get('marketplaces'),
+                  'diagnostics':compact,
+                  'offers_detail':[{k:o.get(k) for k in ('source','price','found_title','url','identity_confidence','match')} for o in p.get('offers_detail',[])],
+              },ensure_ascii=False))
+          hammer=products.get('36-031',{})
+          hammer_diag=hammer.get('diagnostics') or {}
+          if any(any('wall_timeout' in str(e) for e in (d.get('errors') or [])) for d in hammer_diag.values()):
+              raise SystemExit('HAMMER_STILL_WALL_TIMEOUT')
+          if not any((d.get('queries') or 0)>0 for d in hammer_diag.values()):
+              raise SystemExit('HAMMER_ZERO_DISCOVERY_QUERIES')
+          PY
+
+          curl -fsS "$BASE/jobs/$jid/xlsx" -o market.xlsx
+          test -s market.xlsx
