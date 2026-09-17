@@ -1,0 +1,86 @@
+name: PUMA v1.3 Exact Five Smoke
+on:
+  push:
+    branches: [puma-v1.3-integration]
+    paths:
+      - .github/workflows/puma-v13-test5.yml
+      - puma_scouts/validator.py
+      - puma_scouts/variant_engine.py
+      - puma_scouts/production.py
+      - puma_scouts/scouts/catalog.py
+      - puma_scouts/scouts/web_shops.py
+      - tests/test_v13_contamination.py
+      - tests/test_v13_price_integrity.py
+  workflow_dispatch:
+jobs:
+  exact-five:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Run exact five discovery, identity and price integrity smoke
+        run: |
+          python - <<'PY'
+          import asyncio, json, re, time
+          from puma_scouts.models import ProductMission
+          from puma_scouts.production import scan
+
+          missions = [
+              ProductMission(article='002288', source_data={'name':'Монитор Xiaomi Redmi A27Q 2025 P27QCB-RA 2560x1440 2K IPS 100 Гц 27" Черный (2288)','brand':'Xiaomi','model':'P27QCB-RA'}),
+              ProductMission(article='1724889898', source_data={'name':'Обогреватель керамический Emby CHT-500 на 10 кв.м Белый','brand':'Emby','model':'CHT-500'}),
+              ProductMission(article='11676', source_data={'name':'Комплект наушники с кейсом Marshall Major IV Bluetooth Black (1005773)','brand':'Marshall','model':'Major IV'}),
+              ProductMission(article='JBLC50HIRED', source_data={'name':'Гарнитура JBL C50HI Red (JBLC50HIRED)','brand':'JBL','model':'C50HI'}),
+              ProductMission(article='2104618962', source_data={'name':'Инверторный генератор Honda EU35i с ручным пуском 1 фаза 3.5 кВт (2104618962)','brand':'Honda','model':'EU35i'}),
+          ]
+
+          async def one(m):
+              t=time.monotonic()
+              rows=await scan(m,['prom','epicentr','hotline','web_shops'])
+              return {
+                  'article':m.article,
+                  'name':m.source_data['name'],
+                  'seconds':round(time.monotonic()-t,2),
+                  'offers':len(rows),
+                  'sources':sorted({r['source'] for r in rows}),
+                  'rows':[{'source':r['source'],'price':r['price'],'currency':r.get('currency'),'title':r['found_title'],'url':r['url'],'match':r['match']} for r in rows],
+              }
+
+          async def main():
+              return await asyncio.gather(*[one(m) for m in missions])
+
+          started=time.monotonic()
+          result=asyncio.run(main())
+          print('PUMA_EXACT5_SECONDS='+str(round(time.monotonic()-started,2)), flush=True)
+          print('PUMA_EXACT5_RESULTS='+json.dumps(result,ensure_ascii=False), flush=True)
+          found=sum(1 for x in result if x['offers']>0)
+          total=sum(x['offers'] for x in result)
+          print('PUMA_EXACT5_FOUND='+str(found)+'/5', flush=True)
+          print('PUMA_EXACT5_OFFERS='+str(total), flush=True)
+
+          contamination=[]
+          price_integrity=[]
+          for product in result:
+              for row in product['rows']:
+                  title=(row.get('title') or '').casefold()
+                  if product['article']=='11676' and re.search(r'амбуш[ую]р|ear\s*pad|earpad|накладк.*оголов|headband\s+(?:cover|cushion|pad)', title, re.I):
+                      contamination.append({'article':product['article'],'reason':'HEADPHONE_ACCESSORY','title':row.get('title'),'url':row.get('url')})
+                  if product['article']=='1724889898' and re.search(r'sunceramic|invita\s+ch[-\s]?t500', title, re.I):
+                      contamination.append({'article':product['article'],'reason':'EMBY_IDENTITY_CONTAMINATION','title':row.get('title'),'url':row.get('url')})
+                  currency=(row.get('currency') or 'UAH').upper()
+                  if row.get('price') is not None and currency!='UAH':
+                      price_integrity.append({'article':product['article'],'reason':'FOREIGN_CURRENCY_IN_UAH_BASKET','currency':currency,'price':row.get('price'),'title':row.get('title'),'url':row.get('url')})
+
+          print('PUMA_EXACT5_CONTAMINATION='+json.dumps(contamination,ensure_ascii=False), flush=True)
+          print('PUMA_EXACT5_PRICE_INTEGRITY='+json.dumps(price_integrity,ensure_ascii=False), flush=True)
+          if found < 4:
+              raise SystemExit('EXACT5_DISCOVERY_TOO_WEAK')
+          if contamination:
+              raise SystemExit('EXACT5_CONTAMINATION_DETECTED')
+          if price_integrity:
+              raise SystemExit('EXACT5_PRICE_INTEGRITY_FAILED')
+          PY
+# exact-five verification trigger 2026-09-17

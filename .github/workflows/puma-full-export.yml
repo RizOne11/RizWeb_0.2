@@ -1,0 +1,37 @@
+name: PUMA Full Project Export
+
+on:
+  push:
+    branches:
+      - puma-v1.3-integration
+    paths:
+      - '.github/workflows/puma-full-export.yml'
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch snapshot
+        uses: actions/checkout@v4
+
+      - name: Write snapshot metadata
+        run: |
+          cat > PUMA_SNAPSHOT.txt <<EOF
+          PUMA Platform full project snapshot
+          Branch: ${GITHUB_REF_NAME}
+          Commit: ${GITHUB_SHA}
+          Generated: $(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          EOF
+
+      - name: Upload complete project snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: PUMA_full_project_${{ github.sha }}
+          path: |
+            .
+            !.git/**
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+# verified export trigger 2026-09-17

@@ -6,4 +6,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 RUN test -d /app/priceintel && test -f /app/priceintel/runner.py
 RUN mkdir -p /app/data/jobs
-CMD ["sh", "-c", "gunicorn --workers 1 --threads 8 --timeout 0 --bind 0.0.0.0:${PORT} app:app"]
+CMD ["sh", "-c", "gunicorn --workers 1 --threads 8 --timeout 0 --bind 0.0.0.0:${PORT} durable_wsgi:app"]
