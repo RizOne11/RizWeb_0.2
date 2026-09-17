@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import html as html_lib
 from collections import defaultdict
 from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlsplit
@@ -85,14 +86,17 @@ class WebShopsScout(MarketplaceScout):
 
     async def _urls(self, client, query):
         found = []
-        for search_url in (
+        search_urls = (
             f"https://html.duckduckgo.com/html/?q={quote_plus(query)}",
             f"https://www.bing.com/search?q={quote_plus(query)}&count=30&setlang=uk",
             f"https://search.brave.com/search?q={quote_plus(query)}&source=web",
-        ):
-            try:
-                page = await self._get(client, search_url)
-            except httpx.HTTPError:
+        )
+        pages = await asyncio.gather(
+            *(self._get(client, search_url) for search_url in search_urls),
+            return_exceptions=True,
+        )
+        for search_url, page in zip(search_urls, pages):
+            if isinstance(page, Exception):
                 continue
             for url in self._links(page, search_url):
                 if url not in found:
@@ -162,15 +166,14 @@ class WebShopsScout(MarketplaceScout):
         )
 
     async def _fetch_urls(self, client, mission, query, urls, method):
-        out = []
-        for url in urls:
+        async def one(url):
             try:
-                offer = self._offer(mission, url, await self._get(client, url), query, method)
+                return self._offer(mission, url, await self._get(client, url), query, method)
             except httpx.HTTPError:
-                continue
-            if offer:
-                out.append(offer)
-        return out
+                return None
+
+        result = await asyncio.gather(*(one(url) for url in urls))
+        return [offer for offer in result if offer]
 
     async def discover(self, mission, query):
         async with httpx.AsyncClient(timeout=self.timeout) as client:
