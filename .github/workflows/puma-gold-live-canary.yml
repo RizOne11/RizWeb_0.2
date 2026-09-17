@@ -62,7 +62,24 @@ jobs:
 
           result = asyncio.run(main())
           print('PUMA_SHORT_SKU_CANARY='+json.dumps(result, ensure_ascii=False), flush=True)
+          by_article = {item['article']: item for item in result}
           for item in result:
               if not item['queries']:
                   raise SystemExit('ZERO_QUERIES:'+item['article'])
+
+          if by_article['35-005']['offers'] < 1:
+              raise SystemExit('LIVE_FALSE_NEGATIVE:35-005')
+          if by_article['01-0177']['offers'] < 1:
+              raise SystemExit('LIVE_FALSE_NEGATIVE:01-0177')
+
+          forbidden = {
+              '35-005': ('335-005',),
+              '01-0177': ('01-015', '01-0144'),
+          }
+          for article, needles in forbidden.items():
+              for row in by_article[article]['rows']:
+                  haystack = ((row.get('title') or '') + ' ' + (row.get('url') or '')).casefold()
+                  for needle in needles:
+                      if needle.casefold() in haystack:
+                          raise SystemExit(f'LIVE_CONTAMINATION:{article}:{needle}')
           PY
