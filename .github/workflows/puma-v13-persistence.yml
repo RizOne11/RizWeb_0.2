@@ -1,0 +1,34 @@
+name: PUMA v1.3 Persistence
+
+on:
+  push:
+    branches: [puma-v1.3-integration]
+    paths:
+      - puma_job_store.py
+      - durable_wsgi.py
+      - Dockerfile
+      - requirements.txt
+      - tests/test_job_store.py
+      - .github/workflows/puma-v13-persistence.yml
+  workflow_dispatch:
+
+jobs:
+  persistence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt pytest
+      - name: Durable store regression tests
+        run: PYTHONPATH=. pytest -q tests/test_job_store.py
+      - name: Durable WSGI local fallback import
+        run: |
+          env -u PUMA_S3_BUCKET -u PUMA_S3_ENDPOINT -u PUMA_S3_ACCESS_KEY_ID -u PUMA_S3_SECRET_ACCESS_KEY \
+            python - <<'PY'
+          import durable_wsgi
+          assert durable_wsgi._STORE.mode == 'local'
+          assert durable_wsgi.app is not None
+          print('PUMA_PERSISTENCE_LOCAL_FALLBACK_OK')
+          PY
