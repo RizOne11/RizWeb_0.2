@@ -14,6 +14,30 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Import production web app
         run: python -c "import app; from puma_scouts.production import read_missions, save, run_sync; print('PUMA_V13_IMPORT_OK')"
+      - name: Generic product identity regressions
+        run: |
+          python - <<'PY'
+          from puma_scouts.variant_engine import entity_type, variant_conflicts
+          def clean(src,off):
+              c=variant_conflicts(src,off)
+              assert not c,(src,off,c)
+          def conflict(src,off,needle):
+              c=variant_conflicts(src,off)
+              assert any(needle in x for x in c),(src,off,c)
+          # Whole products may mention their own screen; this is not a spare part.
+          assert entity_type('Монітор Redmi G34WQ з вигнутим екраном 180 Гц')=='monitor'
+          conflict('Samsung Galaxy A55 5G 8/256GB','Дисплей модуль для Samsung Galaxy A55','whole-product mismatch')
+          conflict('Samsung Galaxy A55 5G 8/256GB','Акумулятор для Samsung Galaxy A55','whole-product mismatch')
+          conflict('Samsung Galaxy A55 5G 8/256GB','Samsung Galaxy A17 8/256GB','product family mismatch')
+          clean('Samsung Galaxy A55 5G 8/256GB','Samsung Galaxy A55 5G 8/256GB Light Violet')
+          clean('Samsung Galaxy A55 5G 8/256GB','Samsung Galaxy A55 5G 8/256GB Black')
+          conflict('Apple AirPods Pro 2 USB-C','Apple AirPods Pro 3 USB-C','generation mismatch')
+          conflict('Apple AirPods Pro 2 USB-C','Лівий навушник AirPods Pro 2 USB-C','whole-product mismatch')
+          clean('Apple AirPods Pro 2 USB-C','Apple AirPods Pro 2 USB-C MTJV3')
+          clean('Монітор Xiaomi Redmi A27Q 2025 27 2K 100 Гц','Монітор Xiaomi Redmi A27Q 27 2K IPS 100 Гц')
+          conflict('Монітор Xiaomi Redmi A27Q 2025 27 2K 100 Гц','Монітор Xiaomi Redmi X27GQ 27 2K 180 Гц','product family mismatch')
+          print('PUMA_GENERIC_IDENTITY_REGRESSIONS_OK')
+          PY
       - name: XLSX reader and report smoke
         run: |
           python - <<'PY'
