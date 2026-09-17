@@ -34,8 +34,9 @@ def _jsonld_products(page:str)->list[dict[str,Any]]:
             graph=item.get("@graph")
             if isinstance(graph,list):found.extend(x for x in graph if isinstance(x,dict) and str(x.get("@type","")).casefold()=="product")
     return found
+
 class CatalogScout(MarketplaceScout):
-    marketplace:Marketplace;host:str;search_templates:tuple[str,...];product_path_hints:tuple[str,...]=();allow_subdomains=False;external_fallback=False
+    marketplace:Marketplace;host:str;search_templates:tuple[str,...];product_path_hints:tuple[str,...]=();allow_subdomains=False
     def __init__(self,*,timeout:float=15.0,max_candidates_per_query:int=20)->None:
         self.timeout=timeout;self.max_candidates_per_query=max_candidates_per_query;self.headers={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128 Safari/537.36","Accept-Language":"uk-UA,uk;q=0.9,ru;q=0.7,en;q=0.5"}
     async def generate_queries(self,mission:ProductMission)->list[str]:
@@ -80,6 +81,16 @@ class CatalogScout(MarketplaceScout):
             if self._is_candidate(absolute):found.setdefault(_canonical(absolute),None)
             if len(found)>=self.max_candidates_per_query:break
         return list(found)[:self.max_candidates_per_query]
+    async def _native_candidate_urls(self,client:httpx.AsyncClient,query:str)->list[str]:
+        found={}
+        for template in self.search_templates:
+            search_url=template.format(q=quote_plus(query))
+            try:page=await self._get(client,search_url)
+            except httpx.HTTPError:continue
+            for url in self._extract_candidate_links(page,search_url):
+                found.setdefault(url,None)
+                if len(found)>=self.max_candidates_per_query:return list(found)
+        return list(found)
     async def _external_candidate_urls(self,client:httpx.AsyncClient,query:str)->list[str]:
         site_query=f'site:{self.host} {query}';found={}
         for search_url in (f"https://html.duckduckgo.com/html/?q={quote_plus(site_query)}",f"https://www.bing.com/search?q={quote_plus(site_query)}&count=20&setlang=uk",f"https://search.brave.com/search?q={quote_plus(site_query)}&source=web"):
@@ -89,25 +100,12 @@ class CatalogScout(MarketplaceScout):
                 found.setdefault(url,None)
                 if len(found)>=self.max_candidates_per_query:return list(found)
         return list(found)
-    async def _candidate_urls(self,client:httpx.AsyncClient,query:str)->list[str]:
-        found={}
-        for template in self.search_templates:
-            search_url=template.format(q=quote_plus(query))
-            try:page=await self._get(client,search_url)
-            except httpx.HTTPError:continue
-            for url in self._extract_candidate_links(page,search_url):
-                found.setdefault(url,None)
-                if len(found)>=self.max_candidates_per_query:return list(found)
-        # Native marketplace search can silently return an empty/JS-only shell. Use free web discovery as a fallback.
-        if not found:
-            for url in await self._external_candidate_urls(client,query):found.setdefault(url,None)
-        return list(found)[:self.max_candidates_per_query]
-    def _offer(self,mission:ProductMission,url:str,page:str,query:str)->Offer|None:
+    def _offer(self,mission:ProductMission,url:str,page:str,query:str,method:str)->Offer|None:
         products=_jsonld_products(page)
         if not products:return None
         product=products[0];title=_clean(product.get("name"))
         if not title:return None
-        attrs={"source":f"{self.marketplace.value}-jsonld"}
+        attrs={"source":f"{self.marketplace.value}-jsonld","discovery_stage":method}
         for key in ("sku","mpn","gtin","gtin13","model"):
             if product.get(key):attrs[key]=product[key]
         brand=product.get("brand")
@@ -117,24 +115,42 @@ class CatalogScout(MarketplaceScout):
         if isinstance(offers,dict):
             amount=_price(offers.get("price") or offers.get("lowPrice"));availability=_clean(offers.get("availability")) or None;raw_seller=offers.get("seller")
             if isinstance(raw_seller,dict):seller=_clean(raw_seller.get("name")) or None
-        return Offer(article=mission.article,marketplace=self.marketplace,marketplace_product_id=_clean(product.get("sku")) or None,seller_name=seller,title=title,price=amount,availability=availability,url=_canonical(url),image_urls=[],attributes=attrs,query_used=query,discovery_method=f"{self.marketplace.value}-search->jsonld")
-    async def discover(self,mission:ProductMission,query:str)->list[Offer]:
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            urls=await self._candidate_urls(client,query)
-            async def fetch_one(url):
-                try:return self._offer(mission,url,await self._get(client,url),query)
-                except httpx.HTTPError:return None
-            fetched=await asyncio.gather(*(fetch_one(url) for url in urls));return [o for o in fetched if o]
+        return Offer(article=mission.article,marketplace=self.marketplace,marketplace_product_id=_clean(product.get("sku")) or None,seller_name=seller,title=title,price=amount,availability=availability,url=_canonical(url),image_urls=[],attributes=attrs,query_used=query,discovery_method=f"{self.marketplace.value}-{method}->jsonld")
+    async def _fetch_offers(self,client:httpx.AsyncClient,mission:ProductMission,query:str,urls:list[str],method:str)->list[Offer]:
+        async def fetch_one(url):
+            try:return self._offer(mission,url,await self._get(client,url),query,method)
+            except httpx.HTTPError:return None
+        fetched=await asyncio.gather(*(fetch_one(url) for url in urls));return [o for o in fetched if o]
     async def scan(self,mission:ProductMission)->ScanReport:
-        queries=(await self.generate_queries(mission))[:6]
-        results=await asyncio.gather(*(self.discover(mission,q) for q in queries),return_exceptions=True);unique={};errors=[];seen=0
-        for q,result in zip(queries,results):
-            if isinstance(result,Exception):errors.append(f"search {q!r}: {type(result).__name__}: {result}");continue
-            seen+=len(result)
-            for offer in result:unique.setdefault(str(offer.url),offer)
-        validated=[validate_offer(mission,o) for o in unique.values()];passes=[x for x in validated if x.verdict==Verdict.PASS];conflicts=[x for x in validated if x.verdict==Verdict.CONFLICT]
+        queries=(await self.generate_queries(mission))[:4]
+        unique={};errors=[];seen=0
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            # Stage 1: native marketplace search first. This is the stable path and must never be displaced by web fallback.
+            for q in queries:
+                try:urls=await self._native_candidate_urls(client,q)
+                except Exception as exc:errors.append(f"native {q!r}: {type(exc).__name__}: {exc}");continue
+                seen+=len(urls)
+                for offer in await self._fetch_offers(client,mission,q,urls,"native"):
+                    unique.setdefault(str(offer.url),offer)
+                if len(unique)>=self.max_candidates_per_query:break
+            validated=[validate_offer(mission,o) for o in unique.values()]
+            passes=[x for x in validated if x.verdict==Verdict.PASS]
+            # Stage 2: only if native search produced no accepted product, use a bounded free web fallback.
+            if not passes:
+                for q in queries[:2]:
+                    try:urls=await self._external_candidate_urls(client,q)
+                    except Exception as exc:errors.append(f"external {q!r}: {type(exc).__name__}: {exc}");continue
+                    seen+=len(urls)
+                    for offer in await self._fetch_offers(client,mission,q,urls,"external"):
+                        unique.setdefault(str(offer.url),offer)
+                    validated=[validate_offer(mission,o) for o in unique.values()]
+                    passes=[x for x in validated if x.verdict==Verdict.PASS]
+                    if passes:break
+        validated=[validate_offer(mission,o) for o in unique.values()]
+        passes=[x for x in validated if x.verdict==Verdict.PASS];conflicts=[x for x in validated if x.verdict==Verdict.CONFLICT]
         health=ScanHealth.FOUND if passes and not errors else ScanHealth.PARTIAL if passes or conflicts else ScanHealth.ACCESS_LIMITED if errors and not validated else ScanHealth.NOT_FOUND
         return ScanReport(article=mission.article,marketplace=self.marketplace,health=health,queries_generated=len(queries),pages_scanned=len(unique),candidates_seen=seen,candidates_collected=len(unique),duplicates_removed=max(0,seen-len(unique)),search_rounds=len(queries),errors=errors,offers=validated)
+
 class PromScout(CatalogScout):
     marketplace=Marketplace.PROM;host="prom.ua";allow_subdomains=True;product_path_hints=("/p","/m");search_templates=("https://prom.ua/ua/search?search_term={q}","https://prom.ua/ua/search?search_term={q}&sort=score")
 class HotlineScout(CatalogScout):
