@@ -152,6 +152,15 @@ def _accessory_conflict(src: str, off: str) -> str | None:
     return "whole-product mismatch: candidate is accessory" if accessory.search(off) and not accessory.search(src) else None
 
 
+def _bundle_conflict(src: str, off: str) -> str | None:
+    bundle = re.compile(
+        r"(?:\bкомплект\w*\b|\bнабор\w*\b|\bнабір\w*\b|\bbundle\b|\bset\b|"
+        r"\b\d{1,2}\s*(?:в|in)[-\s]*1\b)",
+        re.I,
+    )
+    return "whole-product mismatch: candidate is bundle" if bundle.search(off) and not bundle.search(src) else None
+
+
 def _condition_conflict(src: str, off: str) -> str | None:
     used = r"\b(?:вживан\w*|б\s*у|бу|used|refurbished|refurb|відновлен\w*|восстановлен\w*)\b"
     return "condition mismatch: used/refurbished offer" if re.search(used, _norm(off), re.I) and not re.search(used, _norm(src), re.I) else None
@@ -246,7 +255,11 @@ def validate_offer(mission: ProductMission, offer: Offer) -> ValidatedOffer:
     model_code_matches = explicit_model_agreement(source_text, offer_text)
     brand = _explicit(mission, {"brand", "manufacturer", "vendor"})
     brand_match = _brand_match(brand, offer_text)
-    strong = bool(matched or model_match or model_code_matches)
+    # A shared model code is strong identity evidence only when the known brand
+    # is also present. Model strings such as Buds3, SN99, YH3000, PT3300 and
+    # CHT500 are reused across unrelated products/brands in the wild.
+    model_code_strong = bool(model_code_matches and (not brand or brand_match))
+    strong = bool(matched or model_match or model_code_strong)
     source_name = _explicit(mission, {"name", "title", "product_name", "назва", "наименование"}) or source_text
 
     problems = []
@@ -255,6 +268,7 @@ def validate_offer(mission: ProductMission, offer: Offer) -> ValidatedOffer:
         _condition_conflict(source_text, offer_text),
         _quantity_conflict(source_text, offer_text, strong),
         _accessory_conflict(source_text, offer_text),
+        _bundle_conflict(source_text, offer_text),
         _brand_conflict(brand, offer_text),
         _foreign_brand_before_model_conflict(brand, model, source_name, offer.title),
     ):
@@ -286,7 +300,7 @@ def validate_offer(mission: ProductMission, offer: Offer) -> ValidatedOffer:
     if overlap >= .35:
         positive.append(f"source token overlap={overlap:.2f}")
 
-    confidence = _identity_confidence(source_text, offer_text, strong, matched, model_match or bool(model_code_matches), overlap, conflicts)
+    confidence = _identity_confidence(source_text, offer_text, strong, matched, model_match or model_code_strong, overlap, conflicts)
     if conflicts:
         score = min(.64, .20 + overlap)
         verdict = Verdict.CONFLICT if overlap >= .18 else Verdict.REJECT
