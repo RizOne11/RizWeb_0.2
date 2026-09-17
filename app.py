@@ -20,6 +20,7 @@ JOBS_DIR.mkdir(parents=True, exist_ok=True)
 ALLOWED_ANALYSIS_EXTENSIONS = {"xlsx","csv","yml","xml"}
 ALLOWED_CONTENT_EXTENSIONS = {"csv", "yml", "xml"}
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "120"))
+ENGINE_BUILD = (os.getenv("RENDER_GIT_COMMIT") or "dev")[:12]
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
@@ -77,10 +78,10 @@ def worker(job_id,input_path,limit,selected_markets,supplier):
     classic_xlsx=d/"PUMA_classic_analytical_report.xlsx"
     def progress(current,total,name,extra=None):set_job(job_id,status="running",current=current,total=total,percent=round(current/max(1,total)*100,1),current_product=name,message=extra or "Аналізуємо ринок…")
     try:
-        set_job(job_id,status="running",message="Читаємо каталог…",started_at=time.time())
+        set_job(job_id,status="running",message="Читаємо каталог…",started_at=time.time(),engine_build=ENGINE_BUILD)
         summary=run_sync(str(input_path),str(xlsx),limit=limit,selected=selected_markets,progress_cb=progress,classic_output_path=str(classic_xlsx),supplier=supplier)
-        set_job(job_id,status="done",percent=100,message="Готово",finished_at=time.time(),summary=summary,xlsx_file=str(xlsx),classic_xlsx_file=str(classic_xlsx),resume_available=False)
-    except Exception as e:set_job(job_id,status="error",message=f"{type(e).__name__}: {e}",finished_at=time.time(),resume_available=False)
+        set_job(job_id,status="done",percent=100,message="Готово",finished_at=time.time(),summary=summary,xlsx_file=str(xlsx),classic_xlsx_file=str(classic_xlsx),resume_available=False,engine_build=ENGINE_BUILD)
+    except Exception as e:set_job(job_id,status="error",message=f"{type(e).__name__}: {e}",finished_at=time.time(),resume_available=False,engine_build=ENGINE_BUILD)
     finally:
         with _lock:_running_threads.discard(job_id)
 def _start_worker(jid):
@@ -124,7 +125,7 @@ def analyze():
     allowed={"prom","epicentr","hotline","web_shops"};selected=[x for x in selected if x in allowed] or list(allowed)
     jid=uuid.uuid4().hex[:12];d=JOBS_DIR/jid;d.mkdir(parents=True,exist_ok=True);fn=secure_filename(f.filename) or "catalog.xlsx";p=d/fn;f.save(p);fp=_job_fingerprint(p,supplier,selected,limit);dup=_find_active_duplicate(fp)
     if dup:shutil.rmtree(d,ignore_errors=True);return redirect(url_for("job_page",job_id=dup),code=303)
-    set_job(jid,id=jid,status="queued",percent=0,current=0,total=0,message="Задача поставлена в чергу",filename=fn,supplier=supplier,marketplaces=selected,limit=limit,fingerprint=fp,created_at=time.time(),resume_available=False);_start_worker(jid);return redirect(url_for("job_page",job_id=jid),code=303)
+    set_job(jid,id=jid,status="queued",percent=0,current=0,total=0,message="Задача поставлена в чергу",filename=fn,supplier=supplier,marketplaces=selected,limit=limit,fingerprint=fp,created_at=time.time(),resume_available=False,engine_build=ENGINE_BUILD);_start_worker(jid);return redirect(url_for("job_page",job_id=jid),code=303)
 @app.get("/jobs/<job_id>")
 def job_page(job_id):
     if not get_job(job_id):abort(404)
@@ -134,10 +135,27 @@ def job_status(job_id):
     j=get_job(job_id)
     if not j:abort(404)
     safe={k:v for k,v in j.items() if k not in {"xlsx_file","classic_xlsx_file","fingerprint"}}
+    safe["current_engine_build"]=ENGINE_BUILD
+    safe["stale_build"]=(j.get("engine_build") or "legacy")!=ENGINE_BUILD
     if j.get("status")=="done":
         safe["xlsx_url"]=url_for("download_xlsx",job_id=job_id)
         safe["classic_xlsx_url"]=url_for("download_classic_xlsx",job_id=job_id)
     return jsonify(safe)
+@app.post("/api/jobs/<job_id>/rerun")
+def rerun_job(job_id):
+    j=get_job(job_id)
+    if not j:abort(404)
+    src=JOBS_DIR/job_id/(j.get("filename") or "")
+    if not src.exists():return jsonify({"ok":False,"message":"Вхідний файл цього job більше не доступний."}),404
+    supplier=j.get("supplier") or src.stem or "Не вказано"
+    selected=list(j.get("marketplaces") or ["prom","epicentr","hotline","web_shops"])
+    limit=max(1,min(int(j.get("limit") or 30),int(os.getenv("MAX_PRODUCTS_PER_JOB","5000"))))
+    fp=_job_fingerprint(src,supplier,selected,limit);dup=_find_active_duplicate(fp)
+    if dup:return jsonify({"ok":True,"job_id":dup,"url":url_for("job_page",job_id=dup),"reused":True})
+    jid=uuid.uuid4().hex[:12];d=JOBS_DIR/jid;d.mkdir(parents=True,exist_ok=True);fn=secure_filename(src.name) or "catalog.xlsx";dst=d/fn;shutil.copy2(src,dst)
+    set_job(jid,id=jid,status="queued",percent=0,current=0,total=0,message="Повторний аналіз поставлено в чергу",filename=fn,supplier=supplier,marketplaces=selected,limit=limit,fingerprint=fp,created_at=time.time(),resume_available=False,engine_build=ENGINE_BUILD,parent_job=job_id)
+    _start_worker(jid)
+    return jsonify({"ok":True,"job_id":jid,"url":url_for("job_page",job_id=jid),"reused":False})
 @app.get("/jobs/<job_id>/xlsx")
 def download_xlsx(job_id):
     j=get_job(job_id)
