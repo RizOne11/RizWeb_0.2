@@ -3,15 +3,14 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from puma_scouts.models import Marketplace, Offer, ProductMission, ValidatedOffer, Verdict
+from puma_scouts.models import IdentityConfidence, Marketplace, Offer, ProductMission, ValidatedOffer, Verdict
 from puma_scouts.query import extract_identifiers
-from puma_scouts.variant_engine import generation_confirmation, variant_conflicts
+from puma_scouts.variant_engine import generation_confirmation, named_generations, signature, variant_conflicts
 
 
 def _norm(value: Any) -> str:
     text = str(value or "").casefold();text = re.sub(r"[^\w]+", " ", text, flags=re.UNICODE)
     return re.sub(r"\s+", " ", text).strip()
-
 def _compact(value: Any) -> str:return re.sub(r"[^\w]", "", str(value or "").casefold(), flags=re.UNICODE)
 def _tokens(value: Any) -> set[str]:return {t for t in _norm(value).split() if len(t) >= 3}
 
@@ -34,7 +33,6 @@ def _model_match(expected:str|None,offer_text:str)->bool:
     if _compact(expected) and _compact(expected) in _compact(offer_text):return True
     parts=[t for t in _norm(expected).split() if t];on=_norm(offer_text)
     return len(parts)>=2 and all(re.search(rf"\b{re.escape(p)}\b",on) for p in parts)
-
 def _brand_match(expected:str|None,offer_text:str)->bool:return True if not expected else bool(_compact(expected) and _compact(expected) in _compact(offer_text))
 
 def _brand_conflict(expected:str|None,offer_text:str)->str|None:
@@ -80,6 +78,20 @@ def _year_refresh_conflicts(src:str,off:str)->list[str]:
     if sh and oh and sh.isdisjoint(oh):out.append(f"refresh-rate mismatch: expected {sorted(sh)}, got {sorted(oh)}")
     return out
 
+def _identity_confidence(source_text:str,offer_text:str,strong:bool,matched:list[str],mm:bool,overlap:float,conflicts:list[str])->IdentityConfidence:
+    if conflicts:return IdentityConfidence.CONFLICT
+    if matched or mm:return IdentityConfidence.CONFIRMED
+    expected=signature(source_text);candidate=signature(offer_text)
+    # A distinctive alphanumeric family/model token is useful generic identity evidence
+    # even when a seller omits the supplier's MPN/article.
+    if expected.core_tokens and candidate.core_tokens and not expected.core_tokens.isdisjoint(candidate.core_tokens):
+        return IdentityConfidence.PROBABLE
+    # A named generation alone (e.g. "Pro 2") is not a unique product identifier.
+    # Keep it out of price aggregation unless stronger identity evidence exists.
+    if named_generations(source_text):return IdentityConfidence.AMBIGUOUS
+    if overlap>=.55:return IdentityConfidence.PROBABLE
+    return IdentityConfidence.AMBIGUOUS
+
 def validate_offer(mission:ProductMission,offer:Offer)->ValidatedOffer:
     source_text=" ".join(str(v) for v in mission.source_data.values());offer_text=" ".join([offer.title,*[f"{k} {v}" for k,v in offer.attributes.items()]])
     st,ot=_tokens(source_text),_tokens(offer_text);overlap=len(st&ot)/max(1,len(st));ids=extract_identifiers(mission)
@@ -95,11 +107,14 @@ def validate_offer(mission:ProductMission,offer:Offer)->ValidatedOffer:
     conflicts=list(dict.fromkeys(problems));positive=[]
     if matched:positive.append("strong identifier match: "+", ".join(matched[:4]))
     if mm:positive.append("explicit model match: "+str(model))
-    if generation_ok and generation_confirmation(source_text,source_text)[0]:positive.append("material generation confirmed")
+    if named_generations(source_text) and generation_ok:positive.append("material generation confirmed")
     if brand and bm:positive.append("brand match: "+brand)
     if brand and not bm and strong:positive.append("brand token absent but exact identity confirmed")
     if overlap>=.35:positive.append(f"source token overlap={overlap:.2f}")
+    confidence=_identity_confidence(source_text,offer_text,strong,matched,mm,overlap,conflicts)
     if conflicts:score=min(.64,.20+overlap);verdict=Verdict.CONFLICT if overlap>=.18 else Verdict.REJECT
+    elif confidence==IdentityConfidence.AMBIGUOUS:
+        score=min(.69,.30+overlap);verdict=Verdict.CONFLICT;conflicts.append("ambiguous identity: insufficient unique product evidence")
     elif model and not mm and offer.marketplace!=Marketplace.PROM:
         if overlap>=.18:score=min(.64,.20+overlap);verdict=Verdict.CONFLICT;conflicts.append(f"expected model not confirmed: {model}")
         else:score=overlap;verdict=Verdict.REJECT
@@ -111,4 +126,4 @@ def validate_offer(mission:ProductMission,offer:Offer)->ValidatedOffer:
     elif overlap>=.55:score=min(.79,.35+overlap);verdict=Verdict.PASS
     elif overlap>=.18:score=min(.64,.20+overlap);verdict=Verdict.CONFLICT;conflicts.append("insufficient strong identifier evidence")
     else:score=overlap;verdict=Verdict.REJECT
-    return ValidatedOffer(offer=offer,verdict=verdict,score=score,positive_evidence=positive,conflicts=conflicts,rejection_reasons=[] if verdict!=Verdict.REJECT else ["low identity evidence"])
+    return ValidatedOffer(offer=offer,verdict=verdict,score=score,identity_confidence=confidence,positive_evidence=positive,conflicts=conflicts,rejection_reasons=[] if verdict!=Verdict.REJECT else ["low identity evidence"])
