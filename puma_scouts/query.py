@@ -73,7 +73,13 @@ def _without_identifier(text: str, identifier: str) -> str:
 
 
 def extract_identifiers(mission: ProductMission) -> list[str]:
-    """Return external product identifiers, explicitly excluding row article."""
+    """Return independent external identifiers, explicitly excluding row article.
+
+    Numeric identifiers remain valid when they come from a dedicated field such
+    as EAN/GTIN/model. Free-text discovery from the product name only promotes
+    mixed letter+digit tokens; this prevents measurements such as `1000 г` from
+    turning into broad standalone queries like `1000` / `Polax 1000`.
+    """
     data = {str(k).lower(): v for k, v in mission.source_data.items()}
     found = []
     article_compact = _compact(mission.article)
@@ -84,7 +90,14 @@ def extract_identifiers(mission: ProductMission) -> list[str]:
             found.append(value)
 
     corpus = " ".join(_clean(v) for v in mission.source_data.values() if isinstance(v, (str, int)))
-    for token in re.findall(r"\b(?=[A-ZА-ЯІЇЄ0-9-]{4,}\b)(?=[A-ZА-ЯІЇЄ0-9-]*\d)[A-ZА-ЯІЇЄ0-9-]+\b", corpus.upper()):
+    token_pattern = (
+        r"\b"
+        r"(?=[A-ZА-ЯІЇЄ0-9-]{4,}\b)"
+        r"(?=[A-ZА-ЯІЇЄ0-9-]*\d)"
+        r"(?=[A-ZА-ЯІЇЄ0-9-]*[A-ZА-ЯІЇЄ])"
+        r"[A-ZА-ЯІЇЄ0-9-]+\b"
+    )
+    for token in re.findall(token_pattern, corpus.upper()):
         if _compact(token) != article_compact and token not in found:
             found.append(token)
     return found[:12]
@@ -123,7 +136,10 @@ def generate_queries(mission: ProductMission) -> list[str]:
         if brand:
             add(f"{brand} {identifier}")
 
-    if brand and name:
+    # Avoid a redundant `Brand Brand ...` query when the brand is already in the
+    # descriptive name. Fewer high-quality queries leave budget for extraction
+    # and the Serper recovery layer.
+    if brand and name and _compact(brand) not in _compact(name):
         add(" ".join([brand, *name.split()[:7]]))
 
     return queries[:12]
