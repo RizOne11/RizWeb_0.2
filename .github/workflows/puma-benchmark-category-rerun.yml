@@ -1,4 +1,4 @@
-name: PUMA Benchmark 100 Resumable Rerun
+name: PUMA Benchmark 100 Resumable Status
 
 on:
   push:
@@ -7,14 +7,12 @@ on:
       - '.github/workflows/puma-benchmark-category-rerun.yml'
 
 jobs:
-  rerun:
+  status:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 3
     steps:
-      - name: Verify durable storage and start benchmark
+      - name: Show resumable benchmark status
         run: |
           set -euo pipefail
-          curl -fsS 'https://rizweb-0-2.onrender.com/api/storage'
-          echo
-          curl -fsS -X POST 'https://rizweb-0-2.onrender.com/api/jobs/8fd23d835495/rerun?limit=100'
-# resumable-rerun-build-9ee5d471
+          curl -fsS 'https://rizweb-0-2.onrender.com/api/jobs/08aa3073db27'
+# status-resumable-1
