@@ -101,38 +101,40 @@ async def _scan_source(
     wall_timeout:float=SOURCE_WALL_TIMEOUT,
     hard_timeout:float|None=None,
 ):
-    """Run one source with bounded recovery and report real wall-clock cost."""
-    started=time.perf_counter()
+    """Run one source with bounded recovery while preserving the legacy return shape."""
     soft=max(0.01,float(wall_timeout))
     hard=max(soft,float(SOURCE_HARD_TIMEOUT if hard_timeout is None else hard_timeout))
     task=asyncio.create_task(scout.scan(mission))
     try:
         try:
             report=await asyncio.wait_for(asyncio.shield(task),timeout=soft)
-            return scout,report,time.perf_counter()-started
+            return scout,report
         except asyncio.TimeoutError:
             remaining=max(0.01,hard-soft)
             try:
                 report=await asyncio.wait_for(asyncio.shield(task),timeout=remaining)
                 report.errors.append(f"soft_timeout_{soft:g}s_recovered")
-                return scout,report,time.perf_counter()-started
+                return scout,report
             except asyncio.TimeoutError:
                 task.cancel()
                 await asyncio.gather(task,return_exceptions=True)
-                report=ScanReport(
+                return scout,ScanReport(
                     article=mission.article,marketplace=scout.marketplace,health=ScanHealth.ACCESS_LIMITED,
                     errors=[f"hard_timeout_{hard:g}s"]
                 )
-                return scout,report,time.perf_counter()-started
     except Exception as exc:
         if not task.done():
             task.cancel()
             await asyncio.gather(task,return_exceptions=True)
-        report=ScanReport(
+        return scout,ScanReport(
             article=mission.article,marketplace=scout.marketplace,health=ScanHealth.SCOUT_ERROR,
             errors=[f"{type(exc).__name__}: {exc}"]
         )
-        return scout,report,time.perf_counter()-started
+
+async def _timed_scan_source(scout,mission:ProductMission):
+    started=time.perf_counter()
+    source,report=await _scan_source(scout,mission)
+    return source,report,time.perf_counter()-started
 
 def _title_signature(title:str)->str:
     t=title.casefold();t=re.sub(r"\([^)]*\)$","",t);t=re.sub(r"\b(?:монітор|монитор)\b"," ",t);return re.sub(r"[^a-zа-яіїєґ0-9]+"," ",t).strip()
@@ -147,7 +149,7 @@ def _reason_summary(report)->str:
 
 async def scan_detailed(mission:ProductMission,selected:list[str]|None=None,scout_pool:list[Any]|None=None)->tuple[list[dict[str,Any]],dict[str,Any]]:
     active_scouts=scout_pool if scout_pool is not None else scouts(selected)
-    rows=[];diagnostics={};results=await asyncio.gather(*[_scan_source(s,mission) for s in active_scouts])
+    rows=[];diagnostics={};results=await asyncio.gather(*[_timed_scan_source(s,mission) for s in active_scouts])
     for scout,report,elapsed in results:
         source=scout.marketplace.value
         accepted=0
