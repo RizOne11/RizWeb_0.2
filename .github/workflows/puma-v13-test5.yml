@@ -7,6 +7,9 @@ on:
       - puma_scouts/validator.py
       - puma_scouts/variant_engine.py
       - puma_scouts/production.py
+      - puma_scouts/query.py
+      - puma_scouts/validator_base.py
+      - puma_scouts/lingua.py
       - puma_scouts/scouts/catalog.py
       - puma_scouts/scouts/web_shops.py
       - tests/test_v13_contamination.py
@@ -83,4 +86,4 @@ jobs:
           if price_integrity:
               raise SystemExit('EXACT5_PRICE_INTEGRITY_FAILED')
           PY
-# exact-five verify page cache disabled by default
+# exact-five verify bilingual query and brand port
