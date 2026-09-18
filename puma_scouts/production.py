@@ -81,11 +81,13 @@ def scouts(selected:list[str]|None=None):
     from .scouts.catalog import HotlineScout,PromScout
     from .scouts.epicentr import EpicentrScout
     from .scouts.web_shops import WebShopsScout
+    from .scouts.rozetka_serper import RozetkaSerperScout
     all_scouts={
         "epicentr":EpicentrScout(timeout=8,max_candidates_per_query=10),
         "prom":PromScout(timeout=8,max_candidates_per_query=10),
         "hotline":HotlineScout(timeout=8,max_candidates_per_query=10),
         "web_shops":WebShopsScout(timeout=8,max_candidates_per_query=12,max_per_domain=2),
+        "rozetka":RozetkaSerperScout(timeout=8,max_candidates_per_query=10),
     }
     wanted=set(selected or all_scouts);return [s for k,s in all_scouts.items() if k in wanted]
 
