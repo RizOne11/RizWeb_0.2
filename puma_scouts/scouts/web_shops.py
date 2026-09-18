@@ -197,13 +197,13 @@ class WebShopsScout(MarketplaceScout):
         return [offer for offer in result if offer]
 
     async def discover(self, mission, query):
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            offers = await self._fetch_urls(client, mission, query, await self._urls(client, query), "free-web-search")
-            if offers:
-                return offers
-            if self.serper.enabled:
-                return await self._fetch_urls(client, mission, query, await self._serper_urls(client, query), "serper")
-            return []
+        client = await self.http_client()
+        offers = await self._fetch_urls(client, mission, query, await self._urls(client, query), "free-web-search")
+        if offers:
+            return offers
+        if self.serper.enabled:
+            return await self._fetch_urls(client, mission, query, await self._serper_urls(client, query), "serper")
+        return []
 
     async def scan(self, mission):
         queries = await self.generate_queries(mission)
@@ -220,88 +220,110 @@ class WebShopsScout(MarketplaceScout):
             "serper_cache_hits": 0,
             "serper_rescued": False,
             "serper_success_query": 0,
+            "refresh_only": self.refresh_only(),
+            "identity_urls_attempted": 0,
+            "repair_required": False,
         }
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            known_urls = load_identity_urls(mission, source_name, limit=self.max_candidates_per_query)
-            metrics["identity_urls_loaded"] = len(known_urls)
-            if known_urls:
-                identity_offers = await self._fetch_urls(
-                    client, mission, "identity-map", known_urls, "identity-refresh"
+        client = await self.http_client()
+        identity_limit = self.identity_refresh_limit() if self.refresh_only() else self.max_candidates_per_query
+        known_urls = load_identity_urls(mission, source_name, limit=identity_limit)
+        metrics["identity_urls_loaded"] = len(known_urls)
+        metrics["identity_urls_attempted"] = len(known_urls)
+        if known_urls:
+            identity_offers = await self._fetch_urls(
+                client, mission, "identity-map", known_urls, "identity-refresh"
+            )
+            for offer in identity_offers:
+                unique.setdefault(str(offer.url), offer)
+            identity_validated = [validate_offer(mission, offer) for offer in unique.values()]
+            identity_price_passes = [
+                item for item in identity_validated
+                if item.verdict == Verdict.PASS and item.offer.price is not None
+            ]
+            if identity_price_passes:
+                metrics["identity_refresh_hit"] = True
+                metrics["identity_urls_saved"] = remember_confirmed_identities(
+                    mission, source_name, identity_validated
                 )
-                for offer in identity_offers:
-                    unique.setdefault(str(offer.url), offer)
-                identity_validated = [validate_offer(mission, offer) for offer in unique.values()]
-                identity_price_passes = [
-                    item for item in identity_validated
-                    if item.verdict == Verdict.PASS and item.offer.price is not None
-                ]
-                if identity_price_passes:
-                    metrics["identity_refresh_hit"] = True
-                    metrics["identity_urls_saved"] = remember_confirmed_identities(
-                        mission, source_name, identity_validated
-                    )
-                    return ScanReport(
-                        article=mission.article,
-                        marketplace=self.marketplace,
-                        health=ScanHealth.FOUND,
-                        queries_generated=0,
-                        pages_scanned=len(unique),
-                        candidates_seen=len(known_urls),
-                        candidates_collected=len(unique),
-                        duplicates_removed=max(0, len(known_urls) - len(unique)),
-                        search_rounds=0,
-                        errors=[],
-                        offers=identity_validated,
-                        metrics=metrics,
-                    )
-                unique.clear()
+                return ScanReport(
+                    article=mission.article,
+                    marketplace=self.marketplace,
+                    health=ScanHealth.FOUND,
+                    queries_generated=0,
+                    pages_scanned=len(unique),
+                    candidates_seen=len(known_urls),
+                    candidates_collected=len(unique),
+                    duplicates_removed=max(0, len(known_urls) - len(unique)),
+                    search_rounds=0,
+                    errors=[],
+                    offers=identity_validated,
+                    metrics=metrics,
+                )
+            unique.clear()
 
-            for query in queries:
+        if self.refresh_only():
+            metrics["repair_required"] = True
+            return ScanReport(
+                article=mission.article,
+                marketplace=self.marketplace,
+                health=ScanHealth.NOT_FOUND,
+                queries_generated=0,
+                pages_scanned=0,
+                candidates_seen=metrics["identity_urls_attempted"],
+                candidates_collected=0,
+                duplicates_removed=0,
+                search_rounds=0,
+                errors=[],
+                offers=[],
+                metrics=metrics,
+            )
+
+        for query in queries:
+            try:
+                urls = await self._urls(client, query)
+                seen += len(urls)
+                offers = await self._fetch_urls(client, mission, query, urls, "free-web-search")
+            except Exception as exc:
+                errors.append(str(exc))
+                continue
+            for offer in offers:
+                unique.setdefault(str(offer.url), offer)
+
+        validated = [validate_offer(mission, offer) for offer in unique.values()]
+        price_passes = [
+            item for item in validated
+            if item.verdict == Verdict.PASS and item.offer.price is not None
+        ]
+
+        if not price_passes and self.serper.enabled:
+            for index, query in enumerate(queries[:2], 1):
+                metrics["serper_queries_attempted"] += 1
+                before_api = self.serper.api_requests
+                before_cache = self.serper.cache_hits
                 try:
-                    urls = await self._urls(client, query)
-                    seen += len(urls)
-                    offers = await self._fetch_urls(client, mission, query, urls, "free-web-search")
+                    urls = await self._serper_urls(client, query)
+                    offers = await self._fetch_urls(client, mission, query, urls, "serper")
                 except Exception as exc:
-                    errors.append(str(exc))
+                    errors.append(f"serper {query!r}: {exc}")
+                    metrics["serper_api_requests"] += self.serper.api_requests - before_api
+                    metrics["serper_cache_hits"] += self.serper.cache_hits - before_cache
                     continue
+                metrics["serper_api_requests"] += self.serper.api_requests - before_api
+                metrics["serper_cache_hits"] += self.serper.cache_hits - before_cache
+                seen += len(urls)
                 for offer in offers:
                     unique.setdefault(str(offer.url), offer)
 
-            validated = [validate_offer(mission, offer) for offer in unique.values()]
-            price_passes = [
-                item for item in validated
-                if item.verdict == Verdict.PASS and item.offer.price is not None
-            ]
-
-            if not price_passes and self.serper.enabled:
-                for index, query in enumerate(queries[:2], 1):
-                    metrics["serper_queries_attempted"] += 1
-                    before_api = self.serper.api_requests
-                    before_cache = self.serper.cache_hits
-                    try:
-                        urls = await self._serper_urls(client, query)
-                        offers = await self._fetch_urls(client, mission, query, urls, "serper")
-                    except Exception as exc:
-                        errors.append(f"serper {query!r}: {exc}")
-                        metrics["serper_api_requests"] += self.serper.api_requests - before_api
-                        metrics["serper_cache_hits"] += self.serper.cache_hits - before_cache
-                        continue
-                    metrics["serper_api_requests"] += self.serper.api_requests - before_api
-                    metrics["serper_cache_hits"] += self.serper.cache_hits - before_cache
-                    seen += len(urls)
-                    for offer in offers:
-                        unique.setdefault(str(offer.url), offer)
-
-                    validated = [validate_offer(mission, offer) for offer in unique.values()]
-                    price_passes = [
-                        item for item in validated
-                        if item.verdict == Verdict.PASS and item.offer.price is not None
-                    ]
-                    if price_passes:
-                        metrics["serper_rescued"] = True
-                        metrics["serper_success_query"] = index
-                        break
+                validated = [validate_offer(mission, offer) for offer in unique.values()]
+                price_passes = [
+                    item for item in validated
+                    if item.verdict == Verdict.PASS and item.offer.price is not None
+                ]
+                if price_passes:
+                    metrics["serper_rescued"] = True
+                    metrics["serper_success_query"] = index
+                    break
 
         validated = [validate_offer(mission, offer) for offer in unique.values()]
         passes = [item for item in validated if item.verdict == Verdict.PASS]
