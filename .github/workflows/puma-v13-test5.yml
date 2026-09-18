@@ -15,8 +15,6 @@ on:
 jobs:
   exact-five:
     runs-on: ubuntu-latest
-    env:
-      PUMA_RUNTIME_CACHE_ENABLED: '0'
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
@@ -85,4 +83,4 @@ jobs:
           if price_integrity:
               raise SystemExit('EXACT5_PRICE_INTEGRITY_FAILED')
           PY
-# exact-five isolate runtime-cache overhead
+# exact-five verify page cache disabled by default
