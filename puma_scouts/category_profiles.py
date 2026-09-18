@@ -67,6 +67,10 @@ def classify_category(mission: ProductMission) -> str:
         return CONSUMABLE_MULTIPACK
     if re.search(r"\b(?:кабель|кабел[ья]|cable|шнур|cord|шланг|hose)\b", text, re.I) and _lengths_m(text):
         return CABLE_LENGTH_VARIANT
+    if re.search(r"\b(?:инвертор|інвертор|inverter|generator|генератор|павербанк|повербанк|powerbank|power bank|power station)\b", text, re.I):
+        return ENERGY_POWER
+    if re.search(r"\b(?:смарт[-\s]?часы|смарт[-\s]?годинник\w*|smartwatch|smart watch)\b", text, re.I):
+        return WEARABLE_MODEL_VARIANT
     return GENERIC
 
 
@@ -196,7 +200,7 @@ def _cable_assessment(source: str, candidate: str) -> CategoryAssessment:
 def _power_w(text: str) -> set[int]:
     raw = _norm(text)
     out: set[int] = set()
-    for value, unit in re.findall(r"(?<!\\d)(\\d+(?:[.,]\\d+)?)\\s*(квт|kw|вт|w)\\b", raw, re.I):
+    for value, unit in re.findall(r"(?<!\d)(\d+(?:[.,]\d+)?)\s*(квт|kw|вт|w)\b", raw, re.I):
         number = float(value.replace(",", "."))
         watts = int(round(number * 1000)) if unit.casefold() in {"квт", "kw"} else int(round(number))
         if 50 <= watts <= 100000:
@@ -207,7 +211,7 @@ def _power_w(text: str) -> set[int]:
 def _voltage_v(text: str) -> set[float]:
     raw = _norm(text)
     out: set[float] = set()
-    for value in re.findall(r"(?<!\\d)(\\d{1,3}(?:[.,]\\d+)?)\\s*(?:v|в)\\b", raw, re.I):
+    for value in re.findall(r"(?<!\d)(\d{1,3}(?:[.,]\d+)?)\s*(?:v|в)\b", raw, re.I):
         number = float(value.replace(",", "."))
         if 1 <= number <= 1000:
             out.add(number)
@@ -218,7 +222,7 @@ def _energy_editions(text: str) -> set[str]:
     raw = _norm(text)
     out: set[str] = set()
     for token in ("eco", "pro"):
-        if re.search(rf"\\b{token}\\b", raw, re.I):
+        if re.search(rf"\b{token}\b", raw, re.I):
             out.add(token)
     return out
 
@@ -255,7 +259,7 @@ def _energy_assessment(source: str, candidate: str) -> CategoryAssessment:
 def _wearable_models(text: str) -> set[str]:
     raw = _norm(text)
     out: set[str] = set()
-    for family, model in re.findall(r"\\b(magic|tank)\\s+([a-z]\\d{1,3})\\b", raw, re.I):
+    for family, model in re.findall(r"\b(magic|tank)\s+([a-z]\d{1,3})\b", raw, re.I):
         out.add((family + model).casefold())
     return out
 
@@ -264,12 +268,12 @@ def _wearable_skus(text: str) -> set[str]:
     raw = _norm(text)
     return {
         token.casefold()
-        for token in re.findall(r"\\b(k[a-z]{2}\\d{4,}[a-z0-9]*)\\b", raw, re.I)
+        for token in re.findall(r"\b(k[a-z]{2}\d{4,}[a-z0-9]*)\b", raw, re.I)
     }
 
 
 def _special_edition(text: str) -> bool:
-    return bool(re.search(r"\\bspecial\\s+edition\\b|\\bспец(?:иальная|іальна)\\s+верс", _norm(text), re.I))
+    return bool(re.search(r"\bspecial\s+edition\b|\bспец(?:иальная|іальна)\s+верс", _norm(text), re.I))
 
 
 def _wearable_assessment(source: str, candidate: str) -> CategoryAssessment:
