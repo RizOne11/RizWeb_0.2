@@ -1,4 +1,4 @@
-name: PUMA 15 Active Job Probe
+name: PUMA Benchmark Status Probe
 on:
   push:
     branches: [puma-15-rerun-compare]
@@ -9,10 +9,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: Show post-brand-lock rerun
+      - name: Show benchmark status
         run: |
           set -euo pipefail
-          curl -fsS 'https://rizweb-0-2.onrender.com/api/jobs/ea04892bf9cb'
-# post-brand-lock-status
-
-# status-2
+          curl -fsS 'https://rizweb-0-2.onrender.com/api/jobs/8fd23d835495'
+# benchmark-status-100
