@@ -1,16 +1,32 @@
-name: PUMA Benchmark Status Probe
+name: PUMA Benchmark Export
 on:
   push:
     branches: [puma-15-rerun-compare]
     paths:
       - '.github/workflows/puma-15-probe.yml'
 jobs:
-  probe:
+  export:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 8
     steps:
-      - name: Show benchmark status
+      - name: Download benchmark outputs
         run: |
           set -euo pipefail
-          curl -fsS 'https://rizweb-0-2.onrender.com/api/jobs/8fd23d835495'
-# benchmark-status-latest
+          curl -fsS 'https://rizweb-0-2.onrender.com/api/jobs/8fd23d835495' -o job.json
+          curl -fsSL 'https://rizweb-0-2.onrender.com/jobs/8fd23d835495/xlsx' -o PUMA_doPUMAgatel_market_report.xlsx
+          curl -fsSL 'https://rizweb-0-2.onrender.com/jobs/8fd23d835495/classic-xlsx' -o PUMA_classic_analytical_report.xlsx
+          python - <<'PY'
+          import json, os
+          j=json.load(open('job.json',encoding='utf-8'))
+          print('STATUS', j.get('status'), 'PRODUCTS', j.get('summary',{}).get('products'), 'FOUND', j.get('summary',{}).get('found_products'))
+          for p in ['PUMA_doPUMAgatel_market_report.xlsx','PUMA_classic_analytical_report.xlsx']:
+              print(p, os.path.getsize(p))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: puma-benchmark-100-export
+          path: |
+            job.json
+            PUMA_doPUMAgatel_market_report.xlsx
+            PUMA_classic_analytical_report.xlsx
+          retention-days: 7
