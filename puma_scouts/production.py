@@ -197,8 +197,12 @@ async def scan_detailed(mission:ProductMission,selected:list[str]|None=None,scou
     return list(dedup.values()),diagnostics
 
 async def scan(mission:ProductMission,selected:list[str]|None=None)->list[dict[str,Any]]:
-    rows,_=await scan_detailed(mission,selected)
-    return rows
+    pool=scouts(selected)
+    try:
+        rows,_=await scan_detailed(mission,selected,scout_pool=pool)
+        return rows
+    finally:
+        await asyncio.gather(*(s.aclose() for s in pool if hasattr(s,"aclose")),return_exceptions=True)
 
 def _market_summary(offers):
     groups={}
@@ -357,7 +361,8 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
     for source_map in diagnostics_by_article.values():
         for src,d in source_map.items():
             bucket=source_discovery.setdefault(src,{
-                "products":0,"identity_refresh_hits":0,"identity_urls_loaded":0,"identity_urls_saved":0,
+                "products":0,"identity_refresh_hits":0,"identity_urls_loaded":0,"identity_urls_attempted":0,
+                "identity_urls_saved":0,"repair_required_products":0,
                 "serper_queries_attempted":0,"serper_api_requests":0,"serper_cache_hits":0,
                 "serper_rescued_products":0,"serper_first_query_success":0,"serper_second_query_success":0,
             })
@@ -365,7 +370,9 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
             metrics=d.get("metrics") or {}
             bucket["identity_refresh_hits"]+=int(bool(metrics.get("identity_refresh_hit")))
             bucket["identity_urls_loaded"]+=int(metrics.get("identity_urls_loaded") or 0)
+            bucket["identity_urls_attempted"]+=int(metrics.get("identity_urls_attempted") or 0)
             bucket["identity_urls_saved"]+=int(metrics.get("identity_urls_saved") or 0)
+            bucket["repair_required_products"]+=int(bool(metrics.get("repair_required")))
             bucket["serper_queries_attempted"]+=int(metrics.get("serper_queries_attempted") or 0)
             bucket["serper_api_requests"]+=int(metrics.get("serper_api_requests") or 0)
             bucket["serper_cache_hits"]+=int(metrics.get("serper_cache_hits") or 0)
@@ -406,11 +413,12 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
     serper_disabled_reasons=sorted({str(getattr(s,"disabled_reason","") or "") for s in serper_clients if getattr(s,"disabled_reason","")})
     price_verdicts=Counter(p.get("price_verdict","") for p in products if p.get("price_verdict"))
     web_products=[{k:v for k,v in p.items() if k!="offer_rows"}|{"offers_detail":p["offer_rows"]} for p in products]
-    return {
+    result={
         "products":len(missions),"offers":len(rows),"found_products":found,
         "found_pct":round(found/max(1,len(missions))*100,1),"sources":len({x["source"] for x in rows}),
         "confirmed":confidence.get("CONFIRMED",0),"probable":confidence.get("PROBABLE",0),
         "product_concurrency":PRODUCT_CONCURRENCY,"source_timing":source_timing,
+        "refresh_only":os.getenv("PUMA_REFRESH_ONLY","0").strip().casefold() in {"1","true","yes","on"},
         "serper_api_requests":serper_api_requests,"serper_cache_hits":serper_cache_hits,
         "serper_configured":serper_configured,"serper_enabled":serper_enabled,
         "serper_disabled_reasons":serper_disabled_reasons,
@@ -422,5 +430,7 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
         "price_verdicts":dict(price_verdicts),
         "product_results":web_products,
     }
+    await asyncio.gather(*(s.aclose() for s in scout_pool if hasattr(s,"aclose")),return_exceptions=True)
+    return result
 
 def run_sync(input_path:str,output_path:str,**kwargs):return asyncio.run(run(input_path,output_path,**kwargs))
