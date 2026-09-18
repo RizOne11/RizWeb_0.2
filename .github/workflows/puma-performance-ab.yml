@@ -1,0 +1,66 @@
+name: PUMA Performance A-B
+
+on:
+  push:
+    branches: [puma-performance-recovery]
+    paths:
+      - '.github/workflows/puma-performance-ab.yml'
+
+jobs:
+  benchmark:
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: [main, puma-performance-recovery]
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      PYTHONPATH: .
+      PUMA_RUNTIME_CACHE_ENABLED: "0"
+      PUMA_SOURCE_WALL_TIMEOUT: "70"
+      PUMA_SOURCE_HARD_TIMEOUT: "140"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - name: Run identical five-product production job
+        shell: bash
+        run: |
+          cat > /tmp/puma5.yml <<'YML'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <yml_catalog>
+            <shop>
+              <offers>
+                <offer id="002288"><name>Монитор Xiaomi Redmi A27Q 2025 P27QCB-RA 2560x1440 2K IPS 100 Гц 27" Черный (2288)</name><vendor>Xiaomi</vendor><model>P27QCB-RA</model></offer>
+                <offer id="1724889898"><name>Обогреватель керамический Emby CHT-500 на 10 кв.м Белый</name><vendor>Emby</vendor><model>CHT-500</model></offer>
+                <offer id="11676"><name>Комплект наушники с кейсом Marshall Major IV Bluetooth Black (1005773)</name><vendor>Marshall</vendor><model>Major IV</model></offer>
+                <offer id="JBLC50HIRED"><name>Гарнитура JBL C50HI Red (JBLC50HIRED)</name><vendor>JBL</vendor><model>C50HI</model></offer>
+                <offer id="2104618962"><name>Инверторный генератор Honda EU35i с ручным пуском 1 фаза 3.5 кВт (2104618962)</name><vendor>Honda</vendor><model>EU35i</model></offer>
+              </offers>
+            </shop>
+          </yml_catalog>
+          YML
+          python - <<'PY'
+          import json, os, time
+          from puma_scouts.production import run_sync, PRODUCT_CONCURRENCY
+          started=time.monotonic()
+          summary=run_sync(
+              '/tmp/puma5.yml',
+              '/tmp/puma5.xlsx',
+              selected=['prom','epicentr','hotline','web_shops'],
+          )
+          elapsed=round(time.monotonic()-started,2)
+          print('PUMA_AB_REF='+os.environ.get('GITHUB_REF_NAME',''), flush=True)
+          print('PUMA_AB_CONCURRENCY='+str(PRODUCT_CONCURRENCY), flush=True)
+          print('PUMA_AB_SECONDS='+str(elapsed), flush=True)
+          print('PUMA_AB_FOUND='+str(summary.get('found_products'))+'/5', flush=True)
+          print('PUMA_AB_OFFERS='+str(summary.get('offers')), flush=True)
+          print('PUMA_AB_SUMMARY='+json.dumps({
+              k:v for k,v in summary.items()
+              if k in ('product_concurrency','source_timing','serper_api_requests','serper_cache_hits')
+          },ensure_ascii=False), flush=True)
+          PY
