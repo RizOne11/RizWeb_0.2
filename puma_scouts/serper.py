@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, Iterable
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
+
+from puma_scouts.runtime_cache import runtime_cache, serper_cache_seconds
 
 
 SERPER_ENDPOINT = "https://google.serper.dev/search"
@@ -45,8 +48,8 @@ def extract_serper_links(
 ) -> list[str]:
     """Extract candidate product-page URLs from Serper response only.
 
-    This function does not score, validate, or price products. It only returns
-    candidate URLs for the existing PUMA extract/validator pipeline.
+    Serper remains discovery-only. Every returned page still goes through the
+    normal PUMA extractor, validator, category rules and price-integrity gates.
     """
     found: list[str] = []
     seen: set[str] = set()
@@ -77,11 +80,11 @@ def extract_serper_links(
 
 
 class SerperDiscovery:
-    """Optional URL discovery layer backed by Serper/Google Search.
+    """Optional URL discovery backed by Serper/Google Search.
 
-    It is intentionally discovery-only: callers provide an already sanitized
-    article-free query, and the returned URLs still pass through PUMA's normal
-    extraction, identity matching, contamination checks and price integrity.
+    The expensive part is cached by sanitized query+site. Candidate filtering is
+    applied after the cached raw response, so different scouts can safely reuse
+    one discovery response without weakening validation.
     """
 
     def __init__(
@@ -92,19 +95,62 @@ class SerperDiscovery:
         country: str = "ua",
         language: str = "uk",
         timeout: float = 10.0,
+        cache: Any | None = None,
+        cache_ttl: int | None = None,
     ) -> None:
         self.api_key = (api_key if api_key is not None else os.getenv("SERPER_API_KEY", "")).strip()
         self.max_results = max(1, min(int(max_results or os.getenv("PUMA_SERPER_MAX_RESULTS", "10")), 20))
         self.country = country
         self.language = language
         self.timeout = timeout
+        self.cache = runtime_cache() if cache is None else cache
+        self.cache_ttl = serper_cache_seconds() if cache_ttl is None else max(0, int(cache_ttl))
+        self.api_requests = 0
+        self.cache_hits = 0
+        self.disabled_reason = ""
 
     @property
     def enabled(self) -> bool:
         flag = os.getenv("PUMA_SERPER_ENABLED", "auto").strip().casefold()
         if flag in {"0", "false", "off", "no"}:
             return False
-        return bool(self.api_key)
+        return bool(self.api_key) and not self.disabled_reason
+
+    def _cache_key(self, search_query: str) -> str:
+        return (
+            "puma-serper-v2:"
+            + "|".join(
+                [
+                    self.country.casefold(),
+                    self.language.casefold(),
+                    str(self.max_results),
+                    search_query.casefold(),
+                ]
+            )
+        )
+
+    def _load_cached(self, key: str) -> dict[str, Any] | None:
+        if not self.cache or self.cache_ttl <= 0:
+            return None
+        try:
+            raw = self.cache.get_search(key, self.cache_ttl)
+            if not raw:
+                return None
+            payload = json.loads(raw)
+            if isinstance(payload, dict):
+                self.cache_hits += 1
+                return payload
+        except Exception:
+            return None
+        return None
+
+    def _save_cached(self, key: str, payload: dict[str, Any]) -> None:
+        if not self.cache or self.cache_ttl <= 0:
+            return
+        try:
+            self.cache.put_search(key, json.dumps(payload, ensure_ascii=False))
+        except Exception:
+            pass
 
     async def search_urls(
         self,
@@ -119,34 +165,45 @@ class SerperDiscovery:
             return []
 
         search_query = f"site:{site} {query}" if site else query
-        body = {
-            "q": search_query,
-            "gl": self.country,
-            "hl": self.language,
-            "num": self.max_results,
-        }
-        headers = {
-            "X-API-KEY": self.api_key,
-            "Content-Type": "application/json",
-        }
+        cache_key = self._cache_key(search_query)
+        payload = self._load_cached(cache_key)
 
-        owns_client = client is None
-        if owns_client:
-            client = httpx.AsyncClient(timeout=self.timeout)
-        try:
-            response = await client.post(SERPER_ENDPOINT, headers=headers, json=body)
-            response.raise_for_status()
-            payload = response.json()
-            if not isinstance(payload, dict):
-                return []
-            return extract_serper_links(
-                payload,
-                allowed_host=site,
-                blocked_domains=blocked_domains,
-                max_results=self.max_results,
-            )
-        except (httpx.HTTPError, ValueError, TypeError, RuntimeError):
-            return []
-        finally:
+        owns_client = False
+        if payload is None:
+            body = {
+                "q": search_query,
+                "gl": self.country,
+                "hl": self.language,
+                "num": self.max_results,
+            }
+            headers = {
+                "X-API-KEY": self.api_key,
+                "Content-Type": "application/json",
+            }
+
+            owns_client = client is None
             if owns_client:
-                await client.aclose()
+                client = httpx.AsyncClient(timeout=self.timeout)
+            try:
+                self.api_requests += 1
+                response = await client.post(SERPER_ENDPOINT, headers=headers, json=body)
+                status = int(getattr(response, "status_code", 0) or 0)
+                if status in {401, 403, 429}:
+                    self.disabled_reason = f"http_{status}"
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    return []
+                self._save_cached(cache_key, payload)
+            except (httpx.HTTPError, ValueError, TypeError, RuntimeError):
+                return []
+            finally:
+                if owns_client:
+                    await client.aclose()
+
+        return extract_serper_links(
+            payload,
+            allowed_host=site,
+            blocked_domains=blocked_domains,
+            max_results=self.max_results,
+        )
