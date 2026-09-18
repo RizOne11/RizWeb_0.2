@@ -19,6 +19,7 @@ jobs:
       PUMA_IDENTITY_CACHE_SECONDS: "2592000"
       PUMA_REFRESH_URL_LIMIT: "1"
       PUMA_SERPER_CACHE_SECONDS: "0"
+      PUMA_SERPER_MAX_RESULTS: "50"
       SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
 
     steps:
@@ -43,7 +44,8 @@ jobs:
           fi
           rm -f /tmp/puma-rozetka-serper-cache.sqlite /tmp/puma-rozetka-serper-cache.sqlite-wal /tmp/puma-rozetka-serper-cache.sqlite-shm
           echo "SERPER_CONFIGURED=1"
-          echo "ROZETKA_DISCOVERY_MODE=SERPER_ONLY"
+          echo "ROZETKA_DISCOVERY_MODE=SERPER_SAFE_QUERY_LOCAL_FILTER"
+          echo "SERPER_MAX_RESULTS=50"
 
       - name: Rebuild identical 100-product catalog
         run: |
