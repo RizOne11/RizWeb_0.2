@@ -346,6 +346,7 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
     }
     serper_api_requests=sum(int(getattr(getattr(s,"serper",None),"api_requests",0) or 0) for s in scout_pool)
     serper_cache_hits=sum(int(getattr(getattr(s,"serper",None),"cache_hits",0) or 0) for s in scout_pool)
+    price_verdicts=Counter(p.get("price_verdict","") for p in products if p.get("price_verdict"))
     web_products=[{k:v for k,v in p.items() if k!="offer_rows"}|{"offers_detail":p["offer_rows"]} for p in products]
     return {
         "products":len(missions),"offers":len(rows),"found_products":found,
@@ -353,6 +354,7 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
         "confirmed":confidence.get("CONFIRMED",0),"probable":confidence.get("PROBABLE",0),
         "product_concurrency":PRODUCT_CONCURRENCY,"source_timing":source_timing,
         "serper_api_requests":serper_api_requests,"serper_cache_hits":serper_cache_hits,
+        "price_verdicts":dict(price_verdicts),
         "product_results":web_products,
     }
 
