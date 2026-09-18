@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Iterable
 from urllib.parse import urlsplit, urlunsplit
 
@@ -37,6 +38,49 @@ def _blocked(candidate_host: str, blocked_domains: Iterable[str]) -> bool:
         if expected and (host == expected or host.endswith("." + expected)):
             return True
     return False
+
+
+
+def _serper_safe_query(query: str) -> str:
+    """Normalize paid-search queries for free-tier compatibility.
+
+    Older PUMA 2.0 learned that quoted phrases, site: operators and negative
+    exclusions can be rejected on some Serper accounts. Marketplace filtering can
+    be done locally after the search response, so those operators are optional.
+    """
+    q = " ".join(str(query or "").split()).strip()
+    q = re.sub(r'(?:^|\s)site:[^\s]+', ' ', q, flags=re.I)
+    q = re.sub(r'(?:^|\s)-["“”][^"“”]+["“”]', ' ', q)
+    q = re.sub(r'(?:^|\s)-[^\s]+', ' ', q)
+    q = q.replace('"', ' ').replace('“', ' ').replace('”', ' ').replace(chr(96), ' ')
+    return " ".join(q.split()).strip()
+
+
+def _price_num(value: Any) -> float | None:
+    text = str(value or "").replace("\u00a0", " ").replace(",", ".")
+    match = re.search(r"(?<!\d)(\d{1,3}(?:[ .]\d{3})+|\d{2,8})(?:\.\d{1,2})?", text)
+    if not match:
+        return None
+    try:
+        number = float(re.sub(r"[ .]", "", match.group(0)))
+    except ValueError:
+        return None
+    return number if number > 0 else None
+
+
+def _price_from_text(value: Any) -> float | None:
+    text = str(value or "")
+    patterns = (
+        r"(\d[\d\s\u00a0.,]{1,14})\s*(?:грн|₴|UAH)\b",
+        r"(?:грн|₴|UAH)\s*(\d[\d\s\u00a0.,]{1,14})",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, re.I)
+        if match:
+            price = _price_num(match.group(1))
+            if price:
+                return price
+    return None
 
 
 def extract_serper_links(
@@ -152,19 +196,22 @@ class SerperDiscovery:
         except Exception:
             pass
 
-    async def search_urls(
+    async def search_hits(
         self,
         query: str,
         *,
         client: Any | None = None,
         site: str | None = None,
+        allowed_host: str | None = None,
         blocked_domains: Iterable[str] = (),
-    ) -> list[str]:
-        query = str(query or "").strip()
+        use_site_operator: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Return Serper result metadata while optionally filtering a host locally."""
+        query = _serper_safe_query(query)
         if not self.enabled or not query:
             return []
 
-        search_query = f"site:{site} {query}" if site else query
+        search_query = f"site:{site} {query}" if (site and use_site_operator) else query
         cache_key = self._cache_key(search_query)
         payload = self._load_cached(cache_key)
 
@@ -201,9 +248,63 @@ class SerperDiscovery:
                 if owns_client:
                     await client.aclose()
 
-        return extract_serper_links(
-            payload,
-            allowed_host=site,
+        filter_host = allowed_host or site
+        hits: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for source in ("organic", "shopping"):
+            items = payload.get(source)
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                url = _canonical_url(item.get("link") or "")
+                if not url:
+                    continue
+                host = urlsplit(url).netloc.casefold().removeprefix("www.")
+                if filter_host and not _host_matches(host, filter_host):
+                    continue
+                if _blocked(host, blocked_domains) or url in seen:
+                    continue
+                seen.add(url)
+                title = str(item.get("title") or "")
+                snippet = str(item.get("snippet") or item.get("source") or "")
+                price_hint = (
+                    _price_num(item.get("price"))
+                    or _price_num(item.get("extracted_price"))
+                    or _price_from_text(snippet)
+                    or _price_from_text(title)
+                )
+                hits.append({
+                    "url": url,
+                    "title": title,
+                    "snippet": snippet,
+                    "position": item.get("position"),
+                    "source": source,
+                    "price_hint": price_hint,
+                    "search_query": search_query,
+                })
+                if len(hits) >= self.max_results:
+                    return hits
+        return hits
+
+    async def search_urls(
+        self,
+        query: str,
+        *,
+        client: Any | None = None,
+        site: str | None = None,
+        allowed_host: str | None = None,
+        blocked_domains: Iterable[str] = (),
+        use_site_operator: bool = True,
+    ) -> list[str]:
+        hits = await self.search_hits(
+            query,
+            client=client,
+            site=site,
+            allowed_host=allowed_host,
             blocked_domains=blocked_domains,
-            max_results=self.max_results,
+            use_site_operator=use_site_operator,
         )
+        return [str(hit.get("url") or "") for hit in hits if hit.get("url")]
+
