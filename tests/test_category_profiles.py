@@ -1,0 +1,200 @@
+import pytest
+
+from puma_scouts.models import IdentityConfidence, Marketplace, Offer, ProductMission, Verdict
+from puma_scouts.validator import validate_offer
+from puma_scouts.category_profiles import classify_category
+
+
+def _offer(mission, title, *, marketplace=Marketplace.PROM, brand=""):
+    return Offer(
+        article=mission.article,
+        marketplace=marketplace,
+        title=title,
+        price=1000,
+        currency="UAH",
+        availability="InStock",
+        url="https://example.com/product",
+        attributes={"brand": brand} if brand else {},
+    )
+
+
+def test_classifier_detects_computer_variant_profile():
+    mission = ProductMission(
+        article="15067f64-2a1a-457b-9920-d5d4c2e3de7e",
+        source_data={
+            "name": "Ноутбук Refurb Lenovo ThinkPad L490 FHD i5-8265U/16/1TBSSD Class A-",
+            "brand": "Lenovo",
+        },
+    )
+    assert classify_category(mission) == "computer_variant"
+
+
+def test_classifier_detects_consumable_multipack_profile():
+    mission = ProductMission(
+        article="X-Treme28",
+        source_data={
+            "name": "Баллон газовый универсальный X-Treme 227 г 28 шт (X-Treme28)",
+            "brand": "X-Treme",
+        },
+    )
+    assert classify_category(mission) == "consumable_multipack"
+
+
+def test_classifier_detects_cable_length_profile():
+    mission = ProductMission(
+        article="A147-10m",
+        source_data={
+            "name": "Оптоволоконный кабель Digital HDMI-HDMI 2.1 8K 60Hz Jasoz A147 10 м Черный (A147-10m)",
+            "brand": "Jasoz",
+        },
+    )
+    assert classify_category(mission) == "cable_length_variant"
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        "Зарядное устройство для ноутбука Lenovo ThinkPad L490 45 W",
+        "Клавиатура для ноутбука Lenovo ThinkPad L490 (01YN362)",
+        "Аккумулятор для Lenovo ThinkPad L490",
+    ],
+)
+def test_l490_rejects_laptop_accessories(candidate):
+    mission = ProductMission(
+        article="15067f64-2a1a-457b-9920-d5d4c2e3de7e",
+        source_data={
+            "name": "Ноутбук Refurb Lenovo ThinkPad L490 FHD i5-8265U/16/1TBSSD Class A-",
+            "brand": "Lenovo",
+        },
+    )
+    checked = validate_offer(mission, _offer(mission, candidate, brand="Lenovo"))
+    assert checked.verdict != Verdict.PASS, checked
+    assert any("accessory" in reason or "component" in reason for reason in checked.conflicts), checked
+
+
+@pytest.mark.parametrize(
+    "candidate,needle",
+    [
+        ("Ноутбук Lenovo ThinkPad L490 FHD i5-8265U/16/256SSD Class A-", "storage"),
+        ("Ноутбук Lenovo ThinkPad L490 FHD i5-8365U/16/1TBSSD Class A-", "cpu"),
+    ],
+)
+def test_l490_rejects_explicit_configuration_conflicts(candidate, needle):
+    mission = ProductMission(
+        article="15067f64-2a1a-457b-9920-d5d4c2e3de7e",
+        source_data={
+            "name": "Ноутбук Refurb Lenovo ThinkPad L490 FHD i5-8265U/16/1TBSSD Class A-",
+            "brand": "Lenovo",
+        },
+    )
+    checked = validate_offer(mission, _offer(mission, candidate, brand="Lenovo"))
+    assert checked.verdict != Verdict.PASS, checked
+    assert any(needle in reason.casefold() for reason in checked.conflicts), checked
+
+
+def test_l490_missing_storage_is_probable_not_confirmed():
+    mission = ProductMission(
+        article="15067f64-2a1a-457b-9920-d5d4c2e3de7e",
+        source_data={
+            "name": "Ноутбук Refurb Lenovo ThinkPad L490 FHD i5-8265U/16/1TBSSD Class A-",
+            "brand": "Lenovo",
+        },
+    )
+    checked = validate_offer(
+        mission,
+        _offer(mission, "Ноутбук Lenovo ThinkPad L490 FHD i5-8265U 16GB Class A-", brand="Lenovo"),
+    )
+    assert checked.verdict == Verdict.PASS, checked
+    assert checked.identity_confidence == IdentityConfidence.PROBABLE, checked
+
+
+def test_exact_l490_configuration_stays_confirmed():
+    mission = ProductMission(
+        article="15067f64-2a1a-457b-9920-d5d4c2e3de7e",
+        source_data={
+            "name": "Ноутбук Refurb Lenovo ThinkPad L490 FHD i5-8265U/16/1TBSSD Class A-",
+            "brand": "Lenovo",
+        },
+    )
+    checked = validate_offer(
+        mission,
+        _offer(mission, "Ноутбук Lenovo ThinkPad L490 FHD i5-8265U/16/1TBSSD Class A-", brand="Lenovo"),
+    )
+    assert checked.verdict == Verdict.PASS, checked
+    assert checked.identity_confidence == IdentityConfidence.CONFIRMED, checked
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        "Баллон газовый универсальный X-Treme 227 г",
+        "Баллон газовый универсальный X-Treme 227 г 1 шт",
+        "Баллон газовый универсальный X-Treme 227 г 24 шт",
+    ],
+)
+def test_x_treme_28_does_not_confirm_wrong_or_unknown_pack(candidate):
+    mission = ProductMission(
+        article="X-Treme28",
+        source_data={
+            "name": "Баллон газовый универсальный X-Treme 227 г 28 шт (X-Treme28)",
+            "brand": "X-Treme",
+        },
+    )
+    checked = validate_offer(mission, _offer(mission, candidate, brand="X-Treme"))
+    if "24 шт" in candidate or "1 шт" in candidate:
+        assert checked.verdict != Verdict.PASS, checked
+    else:
+        assert checked.verdict == Verdict.PASS, checked
+        assert checked.identity_confidence == IdentityConfidence.PROBABLE, checked
+
+
+def test_x_treme_28_exact_pack_stays_confirmed():
+    mission = ProductMission(
+        article="X-Treme28",
+        source_data={
+            "name": "Баллон газовый универсальный X-Treme 227 г 28 шт (X-Treme28)",
+            "brand": "X-Treme",
+        },
+    )
+    checked = validate_offer(
+        mission,
+        _offer(mission, "Баллон газовый универсальный X-Treme 227 г 28 шт", brand="X-Treme"),
+    )
+    assert checked.verdict == Verdict.PASS, checked
+    assert checked.identity_confidence == IdentityConfidence.CONFIRMED, checked
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        "Оптоволоконний кабель HDMI 2.1 8K 60Hz 15м Jasoz A147 (A147-15m)",
+        "Оптоволоконный кабель Digital HDMI-HDMI 2.1 8K 60Hz Jasoz A147 30 м (A147-30m)",
+    ],
+)
+def test_a147_10m_rejects_sibling_lengths(candidate):
+    mission = ProductMission(
+        article="A147-10m",
+        source_data={
+            "name": "Оптоволоконный кабель Digital HDMI-HDMI 2.1 8K 60Hz Jasoz A147 10 м Черный (A147-10m)",
+            "brand": "Jasoz",
+        },
+    )
+    checked = validate_offer(mission, _offer(mission, candidate, brand="Jasoz"))
+    assert checked.verdict != Verdict.PASS, checked
+    assert any("length" in reason.casefold() for reason in checked.conflicts), checked
+
+
+def test_a147_10m_exact_length_stays_confirmed():
+    mission = ProductMission(
+        article="A147-10m",
+        source_data={
+            "name": "Оптоволоконный кабель Digital HDMI-HDMI 2.1 8K 60Hz Jasoz A147 10 м Черный (A147-10m)",
+            "brand": "Jasoz",
+        },
+    )
+    checked = validate_offer(
+        mission,
+        _offer(mission, "Оптоволоконний кабель HDMI 2.1 8K 60Hz 10м Jasoz A147 (A147-10m)", brand="Jasoz"),
+    )
+    assert checked.verdict == Verdict.PASS, checked
+    assert checked.identity_confidence == IdentityConfidence.CONFIRMED, checked
