@@ -185,6 +185,7 @@ async def scan_detailed(mission:ProductMission,selected:list[str]|None=None,scou
             "pass":verdicts.get("PASS",0),"conflict":verdicts.get("CONFLICT",0),"reject":verdicts.get("REJECT",0),
             "ambiguous":identities.get("AMBIGUOUS",0),"identity_conflict":identities.get("CONFLICT",0),
             "reasons":reason_summary,"errors":list(report.errors or []),"elapsed_seconds":round(elapsed,3),
+            "metrics":dict(report.metrics or {}),
         }
     dedup={}
     for x in rows:
@@ -244,15 +245,23 @@ def save(rows:list[dict[str,Any]],output:str,missions:list[ProductMission]|None=
     for key,count in sorted(groups.items(),key=lambda z:(z[0][0],z[0][2],z[0][3])):summary.append([*key,count])
     summary.freeze_panes="A2";summary.auto_filter.ref=summary.dimensions
     diag=wb.create_sheet("Discovery діагностика")
-    diag.append(["Артикул","Товар","Джерело","Health","Секунд","Запитів","Сторінок","Кандидатів","Seen","Прийнято","PASS","CONFLICT","REJECT","AMBIGUOUS","ID CONFLICT","Причини","Помилки"])
+    diag.append(["Артикул","Товар","Джерело","Health","Секунд","Запитів","Сторінок","Кандидатів","Seen","Прийнято","PASS","CONFLICT","REJECT","AMBIGUOUS","ID CONFLICT","Identity URLs","Identity Hit","Identity Saved","Serper Attempts","Serper API","Serper Cache","Serper Rescued","Serper Success Query","Причини","Помилки"])
     name_by_article={m.article:m.source_data.get("name","") for m in missions}
     for article,sources in (diagnostics_by_article or {}).items():
         for src,d in sources.items():
             diag.append([
                 article,name_by_article.get(article,""),src,d.get("health",""),d.get("elapsed_seconds",0),d.get("queries",0),d.get("pages",0),
                 d.get("candidates",0),d.get("seen",0),d.get("accepted",0),d.get("pass",0),d.get("conflict",0),
-                d.get("reject",0),d.get("ambiguous",0),d.get("identity_conflict",0),d.get("reasons",""),
-                " | ".join(d.get("errors") or [])
+                d.get("reject",0),d.get("ambiguous",0),d.get("identity_conflict",0),
+                (d.get("metrics") or {}).get("identity_urls_loaded",0),
+                bool((d.get("metrics") or {}).get("identity_refresh_hit",False)),
+                (d.get("metrics") or {}).get("identity_urls_saved",0),
+                (d.get("metrics") or {}).get("serper_queries_attempted",0),
+                (d.get("metrics") or {}).get("serper_api_requests",0),
+                (d.get("metrics") or {}).get("serper_cache_hits",0),
+                bool((d.get("metrics") or {}).get("serper_rescued",False)),
+                (d.get("metrics") or {}).get("serper_success_query",0),
+                d.get("reasons","")," | ".join(d.get("errors") or [])
             ])
     diag.freeze_panes="A2";diag.auto_filter.ref=diag.dimensions;wb.save(output)
 
@@ -344,6 +353,48 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
         }
         for src,vals in timing_samples.items()
     }
+    source_discovery={}
+    for source_map in diagnostics_by_article.values():
+        for src,d in source_map.items():
+            bucket=source_discovery.setdefault(src,{
+                "products":0,"identity_refresh_hits":0,"identity_urls_loaded":0,"identity_urls_saved":0,
+                "serper_queries_attempted":0,"serper_api_requests":0,"serper_cache_hits":0,
+                "serper_rescued_products":0,"serper_first_query_success":0,"serper_second_query_success":0,
+            })
+            bucket["products"]+=1
+            metrics=d.get("metrics") or {}
+            bucket["identity_refresh_hits"]+=int(bool(metrics.get("identity_refresh_hit")))
+            bucket["identity_urls_loaded"]+=int(metrics.get("identity_urls_loaded") or 0)
+            bucket["identity_urls_saved"]+=int(metrics.get("identity_urls_saved") or 0)
+            bucket["serper_queries_attempted"]+=int(metrics.get("serper_queries_attempted") or 0)
+            bucket["serper_api_requests"]+=int(metrics.get("serper_api_requests") or 0)
+            bucket["serper_cache_hits"]+=int(metrics.get("serper_cache_hits") or 0)
+            bucket["serper_rescued_products"]+=int(bool(metrics.get("serper_rescued")))
+            success_query=int(metrics.get("serper_success_query") or 0)
+            if success_query==1:bucket["serper_first_query_success"]+=1
+            elif success_query==2:bucket["serper_second_query_success"]+=1
+
+    planned_sources=[s.marketplace.value for s in scout_pool]
+    source_sets={}
+    for m in missions:source_sets[m.article]=set()
+    for x in rows:
+        if x.get("price") is None or not _is_uah_currency(x.get("currency","UAH")):continue
+        source_sets.setdefault(x["article"],set()).add(x["source"])
+    coverage_by_source={
+        src:{
+            "products_with_price":sum(1 for values in source_sets.values() if src in values),
+            "pct":round(sum(1 for values in source_sets.values() if src in values)/max(1,len(missions))*100,1),
+        }
+        for src in planned_sources
+    }
+    source_count_distribution={
+        str(n):sum(1 for values in source_sets.values() if len(values)==n)
+        for n in range(0,len(planned_sources)+1)
+    }
+    all_sources_products=sum(
+        1 for values in source_sets.values()
+        if all(src in values for src in planned_sources)
+    )
     serper_clients=[getattr(s,"serper",None) for s in scout_pool if getattr(s,"serper",None) is not None]
     serper_api_requests=sum(int(getattr(s,"api_requests",0) or 0) for s in serper_clients)
     serper_cache_hits=sum(int(getattr(s,"cache_hits",0) or 0) for s in serper_clients)
@@ -360,6 +411,11 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
         "serper_api_requests":serper_api_requests,"serper_cache_hits":serper_cache_hits,
         "serper_configured":serper_configured,"serper_enabled":serper_enabled,
         "serper_disabled_reasons":serper_disabled_reasons,
+        "source_discovery":source_discovery,
+        "coverage_by_source":coverage_by_source,
+        "all_sources_products":all_sources_products,
+        "all_sources_pct":round(all_sources_products/max(1,len(missions))*100,1),
+        "source_count_distribution":source_count_distribution,
         "price_verdicts":dict(price_verdicts),
         "product_results":web_products,
     }
