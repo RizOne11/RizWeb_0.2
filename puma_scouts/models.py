@@ -17,4 +17,4 @@ class Offer(BaseModel):
 class ValidatedOffer(BaseModel):
     offer:Offer; verdict:Verdict; score:float=Field(ge=0,le=1); identity_confidence:IdentityConfidence|None=None; positive_evidence:list[str]=Field(default_factory=list); conflicts:list[str]=Field(default_factory=list); rejection_reasons:list[str]=Field(default_factory=list)
 class ScanReport(BaseModel):
-    article:str; marketplace:Marketplace; health:ScanHealth; queries_generated:int=0; pages_scanned:int=0; candidates_seen:int=0; candidates_collected:int=0; duplicates_removed:int=0; new_identifiers_found:list[str]=Field(default_factory=list); search_rounds:int=0; errors:list[str]=Field(default_factory=list); offers:list[ValidatedOffer]=Field(default_factory=list)
+    article:str; marketplace:Marketplace; health:ScanHealth; queries_generated:int=0; pages_scanned:int=0; candidates_seen:int=0; candidates_collected:int=0; duplicates_removed:int=0; new_identifiers_found:list[str]=Field(default_factory=list); search_rounds:int=0; errors:list[str]=Field(default_factory=list); offers:list[ValidatedOffer]=Field(default_factory=list); metrics:dict[str,Any]=Field(default_factory=dict)
