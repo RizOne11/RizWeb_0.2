@@ -1,0 +1,23 @@
+name: PUMA Performance Recovery Gate
+
+on:
+  push:
+    branches: [puma-performance-recovery]
+    paths:
+      - '.github/workflows/puma-performance-recovery.yml'
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: .
+      PUMA_RUNTIME_CACHE_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt pytest
+      - name: Full regression suite
+        run: pytest -q tests
