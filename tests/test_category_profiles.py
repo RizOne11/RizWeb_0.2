@@ -198,3 +198,113 @@ def test_a147_10m_exact_length_stays_confirmed():
     )
     assert checked.verdict == Verdict.PASS, checked
     assert checked.identity_confidence == IdentityConfidence.CONFIRMED, checked
+
+
+
+def test_classifier_detects_energy_power_profile():
+    mission = ProductMission(
+        article="M1202",
+        source_data={
+            "name": "Инвертор Must PV1800 PV18-2012 ECO 2 кВт 12В MPPT 80А с чистой синусоидой Белый (M1202)",
+            "brand": "Must",
+        },
+    )
+    assert classify_category(mission) == "energy_power"
+
+
+@pytest.mark.parametrize(
+    "candidate,needle",
+    [
+        ("Инвертор Must Solar PV1800 VPK 3000 W 24В+ в сборе", "power"),
+        ("Система автономная с инвертором Must PV1800 PV18-2012 ECO 2000 Вт 12V и аккумулятором 12,8V 100A", "bundle"),
+        ("MUST PV18-2012 PRO", "edition"),
+    ],
+)
+def test_must_inverter_rejects_wrong_energy_variant(candidate, needle):
+    mission = ProductMission(
+        article="M1202",
+        source_data={
+            "name": "Инвертор Must PV1800 PV18-2012 ECO 2 кВт 12В MPPT 80А с чистой синусоидой Белый (M1202)",
+            "brand": "Must",
+        },
+    )
+    checked = validate_offer(mission, _offer(mission, candidate, brand="Must"))
+    assert checked.verdict != Verdict.PASS, checked
+    assert any(needle in reason.casefold() for reason in checked.conflicts), checked
+
+
+def test_must_inverter_exact_variant_stays_confirmed():
+    mission = ProductMission(
+        article="M1202",
+        source_data={
+            "name": "Инвертор Must PV1800 PV18-2012 ECO 2 кВт 12В MPPT 80А с чистой синусоидой Белый (M1202)",
+            "brand": "Must",
+        },
+    )
+    checked = validate_offer(
+        mission,
+        _offer(mission, "Инвертор Must PV1800 PV18-2012 ECO 2 кВт 12В MPPT 80А", brand="Must"),
+    )
+    assert checked.verdict == Verdict.PASS, checked
+    assert checked.identity_confidence == IdentityConfidence.CONFIRMED, checked
+
+
+def test_classifier_detects_wearable_model_profile():
+    mission = ProductMission(
+        article="KMR00010B",
+        source_data={"name": "Смарт-часы Kospet MAGIC R10 Black (KMR00010B)", "brand": "Kospet"},
+    )
+    assert classify_category(mission) == "wearable_model_variant"
+
+
+def test_kospet_magic_r10_rejects_p10():
+    mission = ProductMission(
+        article="KMR00010B",
+        source_data={"name": "Смарт-часы Kospet MAGIC R10 Black (KMR00010B)", "brand": "Kospet"},
+    )
+    checked = validate_offer(
+        mission,
+        _offer(mission, "Часы KOSPET MAGIC P10 Smartwatch", brand="Kospet"),
+    )
+    assert checked.verdict != Verdict.PASS, checked
+    assert any("wearable model" in reason.casefold() for reason in checked.conflicts), checked
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        "Смарт-годинник тактичний Kospet Tank T4 Black (KTT0004B)",
+        "Смарт-годинник Kospet Tank T4 Special Edition Black Gold (KTT0004MG)",
+    ],
+)
+def test_kospet_t4_special_edition_rejects_neighbor_sku(candidate):
+    mission = ProductMission(
+        article="KTT0004SEB",
+        source_data={
+            "name": "Смарт-часы тактические Kospet Tank T4 Special Edition Black (KTT0004SEB)",
+            "brand": "Kospet",
+        },
+    )
+    checked = validate_offer(mission, _offer(mission, candidate, brand="Kospet"))
+    assert checked.verdict != Verdict.PASS, checked
+    assert any("wearable sku" in reason.casefold() or "edition" in reason.casefold() for reason in checked.conflicts), checked
+
+
+def test_kospet_t4_special_edition_exact_stays_confirmed():
+    mission = ProductMission(
+        article="KTT0004SEB",
+        source_data={
+            "name": "Смарт-часы тактические Kospet Tank T4 Special Edition Black (KTT0004SEB)",
+            "brand": "Kospet",
+        },
+    )
+    checked = validate_offer(
+        mission,
+        _offer(
+            mission,
+            "Смарт-годинник тактичний Kospet Tank T4 Special Edition Black (KTT0004SEB)",
+            brand="Kospet",
+        ),
+    )
+    assert checked.verdict == Verdict.PASS, checked
+    assert checked.identity_confidence == IdentityConfidence.CONFIRMED, checked
