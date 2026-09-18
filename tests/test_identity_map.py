@@ -198,3 +198,36 @@ def test_refresh_only_marks_repair_without_discovery(monkeypatch):
     assert report.metrics["repair_required"] is True
     assert report.metrics["serper_queries_attempted"] == 0
     assert report.offers == []
+
+
+
+def test_refresh_only_without_identity_is_discovery_gap(monkeypatch):
+    scout = WebShopsScout(timeout=1, max_candidates_per_query=5)
+    mission = _mission()
+    free_search_calls = 0
+
+    async def fake_queries(_mission):
+        return ["Honda EU35i"]
+
+    async def should_not_search(client, query):
+        nonlocal free_search_calls
+        free_search_calls += 1
+        return []
+
+    monkeypatch.setenv("PUMA_REFRESH_ONLY", "1")
+    monkeypatch.setattr(web_module, "load_identity_urls", lambda *a, **k: [])
+    monkeypatch.setattr(scout, "generate_queries", fake_queries)
+    monkeypatch.setattr(scout, "_urls", should_not_search)
+
+    async def scenario():
+        try:
+            return await scout.scan(mission)
+        finally:
+            await scout.aclose()
+
+    report = asyncio.run(scenario())
+
+    assert free_search_calls == 0
+    assert report.metrics["repair_required"] is False
+    assert report.metrics["discovery_gap"] is True
+    assert report.metrics["identity_urls_loaded"] == 0
