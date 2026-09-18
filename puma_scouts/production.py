@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio,csv,os,re,statistics,xml.etree.ElementTree as ET
+import asyncio,csv,json,os,re,statistics,xml.etree.ElementTree as ET
 from collections import Counter
 from pathlib import Path
 from typing import Any,Callable
@@ -247,23 +247,81 @@ def save(rows:list[dict[str,Any]],output:str,missions:list[ProductMission]|None=
             ])
     diag.freeze_panes="A2";diag.auto_filter.ref=diag.dimensions;wb.save(output)
 
-async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[str]|None=None,progress_cb:Callable|None=None,classic_output_path:str|None=None,supplier:str="")->dict[str,Any]:
-    missions=read_missions(input_path,limit);rows=[];diagnostics_by_article={};semaphore=asyncio.Semaphore(PRODUCT_CONCURRENCY);completed=0;lock=asyncio.Lock()
-    async def one(m):
-        nonlocal completed
+
+def _load_checkpoint(path:str|None,token:str|None,missions:list[ProductMission])->dict[int,dict[str,Any]]:
+    if not path:return {}
+    p=Path(path)
+    if not p.is_file():return {}
+    try:
+        data=json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    articles=[m.article for m in missions]
+    if data.get("version")!=1:return {}
+    if str(data.get("checkpoint_token") or "")!=str(token or ""):return {}
+    if list(data.get("articles") or [])!=articles:return {}
+    completed={}
+    for key,value in (data.get("completed") or {}).items():
+        try:index=int(key)
+        except (TypeError,ValueError):continue
+        if not isinstance(value,dict) or index<0 or index>=len(missions):continue
+        if value.get("article")!=missions[index].article:continue
+        completed[index]=value
+    return completed
+
+def _save_checkpoint(path:str|None,token:str|None,missions:list[ProductMission],completed:dict[int,dict[str,Any]])->None:
+    if not path:return
+    p=Path(path);p.parent.mkdir(parents=True,exist_ok=True)
+    payload={
+        "version":1,
+        "checkpoint_token":str(token or ""),
+        "articles":[m.article for m in missions],
+        "completed_indexes":sorted(completed),
+        "completed":{str(i):completed[i] for i in sorted(completed)},
+    }
+    tmp=p.with_suffix(p.suffix+".tmp")
+    tmp.write_text(json.dumps(payload,ensure_ascii=False,separators=(",",":")),encoding="utf-8")
+    os.replace(tmp,p)
+
+async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[str]|None=None,progress_cb:Callable|None=None,classic_output_path:str|None=None,supplier:str="",checkpoint_path:str|None=None,checkpoint_token:str|None=None)->dict[str,Any]:
+    missions=read_missions(input_path,limit)
+    completed_state=_load_checkpoint(checkpoint_path,checkpoint_token,missions)
+    semaphore=asyncio.Semaphore(PRODUCT_CONCURRENCY)
+    lock=asyncio.Lock()
+
+    async def one(index:int,m:ProductMission):
         async with semaphore:
-            if progress_cb:progress_cb(completed,len(missions),m.source_data.get("name",m.article),f"Шукаємо реальні пропозиції… (паралельність {PRODUCT_CONCURRENCY})")
+            async with lock:
+                already_done=len(completed_state)
+            if progress_cb:progress_cb(already_done,len(missions),m.source_data.get("name",m.article),f"Шукаємо реальні пропозиції… (паралельність {PRODUCT_CONCURRENCY})")
             found,diag=await scan_detailed(m,selected)
             async with lock:
-                completed+=1
-                if progress_cb:progress_cb(completed,len(missions),m.source_data.get("name",m.article),"Товар перевірено")
-            return m.article,found,diag
-    for article,found,diag in await asyncio.gather(*[one(m) for m in missions]):
-        rows.extend(found);diagnostics_by_article[article]=diag
-    products=product_report(missions,rows,diagnostics_by_article);save(rows,output_path,missions,diagnostics_by_article)
+                completed_state[index]={"article":m.article,"found":found,"diagnostics":diag}
+                _save_checkpoint(checkpoint_path,checkpoint_token,missions,completed_state)
+                current=len(completed_state)
+                if progress_cb:progress_cb(current,len(missions),m.source_data.get("name",m.article),"Товар перевірено")
+            return index
+
+    pending=[(i,m) for i,m in enumerate(missions) if i not in completed_state]
+    if progress_cb and completed_state:
+        progress_cb(len(completed_state),len(missions),"Відновлення",f"Продовжуємо з {len(completed_state)} з {len(missions)} вже перевірених товарів")
+    if pending:
+        await asyncio.gather(*[one(i,m) for i,m in pending])
+
+    rows=[]
+    diagnostics_by_article={}
+    for i,m in enumerate(missions):
+        item=completed_state.get(i) or {"found":[],"diagnostics":{}}
+        rows.extend(item.get("found") or [])
+        diagnostics_by_article[m.article]=item.get("diagnostics") or {}
+
+    products=product_report(missions,rows,diagnostics_by_article)
+    save(rows,output_path,missions,diagnostics_by_article)
     if classic_output_path:save_classic(products,classic_output_path,supplier=supplier)
+    _save_checkpoint(checkpoint_path,checkpoint_token,missions,completed_state)
     if progress_cb:progress_cb(len(missions),len(missions),"Готово","Формуємо звіти…")
-    found=sum(1 for p in products if p["status"]=="FOUND");confidence=Counter(x.get("identity_confidence","LEGACY_PASS") for x in rows)
+    found=sum(1 for p in products if p["status"]=="FOUND")
+    confidence=Counter(x.get("identity_confidence","LEGACY_PASS") for x in rows)
     web_products=[{k:v for k,v in p.items() if k!="offer_rows"}|{"offers_detail":p["offer_rows"]} for p in products]
     return {"products":len(missions),"offers":len(rows),"found_products":found,"found_pct":round(found/max(1,len(missions))*100,1),"sources":len({x["source"] for x in rows}),"confirmed":confidence.get("CONFIRMED",0),"probable":confidence.get("PROBABLE",0),"product_results":web_products}
 
