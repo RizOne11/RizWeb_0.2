@@ -143,7 +143,7 @@ class SerperDiscovery:
         cache_ttl: int | None = None,
     ) -> None:
         self.api_key = (api_key if api_key is not None else os.getenv("SERPER_API_KEY", "")).strip()
-        self.max_results = max(1, min(int(max_results or os.getenv("PUMA_SERPER_MAX_RESULTS", "10")), 20))
+        self.max_results = max(1, min(int(max_results or os.getenv("PUMA_SERPER_MAX_RESULTS", "10")), 50))
         self.country = country
         self.language = language
         self.timeout = timeout
