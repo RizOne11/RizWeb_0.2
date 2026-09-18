@@ -1,0 +1,211 @@
+name: PUMA Rozetka Serper 100 Benchmark
+
+on:
+  push:
+    branches: [puma-rozetka-serper-lab]
+    paths:
+      - '.github/workflows/puma-rozetka-serper-benchmark.yml'
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      PYTHONPATH: .
+      PUMA_SOURCE_WALL_TIMEOUT: "70"
+      PUMA_SOURCE_HARD_TIMEOUT: "140"
+      PUMA_RUNTIME_CACHE_PATH: "/tmp/puma-rozetka-serper-cache.sqlite"
+      PUMA_IDENTITY_CACHE_SECONDS: "2592000"
+      PUMA_REFRESH_URL_LIMIT: "1"
+      PUMA_SERPER_CACHE_SECONDS: "0"
+      SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: puma-rozetka-serper-lab
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install -r requirements.txt pytest
+
+      - name: Full regression suite
+        run: pytest -q tests
+
+      - name: Verify benchmark configuration
+        run: |
+          if [ -z "${SERPER_API_KEY:-}" ]; then
+            echo "SERPER_REQUIRED_BUT_NOT_CONFIGURED"
+            exit 42
+          fi
+          rm -f /tmp/puma-rozetka-serper-cache.sqlite /tmp/puma-rozetka-serper-cache.sqlite-wal /tmp/puma-rozetka-serper-cache.sqlite-shm
+          echo "SERPER_CONFIGURED=1"
+          echo "ROZETKA_DISCOVERY_MODE=SERPER_ONLY"
+
+      - name: Rebuild identical 100-product catalog
+        run: |
+          python - <<'PY'
+          import json, urllib.request, xml.etree.ElementTree as ET
+
+          url = "https://rizweb-0-2.onrender.com/api/jobs/8fd23d835495"
+          with urllib.request.urlopen(url, timeout=60) as r:
+              payload = json.load(r)
+
+          products = (payload.get("summary") or {}).get("product_results") or []
+          if len(products) < 100:
+              raise SystemExit(f"BASELINE_PRODUCTS_MISSING: {len(products)}")
+
+          root = ET.Element("yml_catalog")
+          shop = ET.SubElement(root, "shop")
+          offers = ET.SubElement(shop, "offers")
+          for i, p in enumerate(products[:100], 1):
+              offer = ET.SubElement(offers, "offer", id=str(p.get("article") or f"ROW-{i}"))
+              fields = {
+                  "name": p.get("name"),
+                  "vendor": p.get("brand"),
+                  "model": p.get("model"),
+                  "price": p.get("own_price"),
+                  "category": p.get("category"),
+                  "supplier": p.get("supplier"),
+                  "old_price": p.get("old_price"),
+                  "discount": p.get("discount"),
+              }
+              for key, value in fields.items():
+                  if value not in (None, ""):
+                      ET.SubElement(offer, key).text = str(value)
+
+          ET.ElementTree(root).write("/tmp/puma100.yml", encoding="utf-8", xml_declaration=True)
+          print("PUMA_ROZETKA_INPUT_PRODUCTS=100", flush=True)
+          PY
+
+      - name: Serper discovery, fast refresh, and repair
+        run: |
+          python - <<'PY'
+          import json, os, time, xml.etree.ElementTree as ET
+          from pathlib import Path
+          from puma_scouts.production import run_sync
+
+          def write_products(path, products):
+              root=ET.Element("yml_catalog")
+              shop=ET.SubElement(root,"shop")
+              offers=ET.SubElement(shop,"offers")
+              for i,p in enumerate(products,1):
+                  offer=ET.SubElement(offers,"offer",id=str(p.get("article") or f"ROW-{i}"))
+                  fields={
+                      "name":p.get("name"),"vendor":p.get("brand"),"model":p.get("model"),
+                      "price":p.get("own_price"),"category":p.get("category"),
+                      "supplier":p.get("supplier"),"old_price":p.get("old_price"),
+                      "discount":p.get("discount"),
+                  }
+                  for key,value in fields.items():
+                      if value not in (None,""):
+                          ET.SubElement(offer,key).text=str(value)
+              ET.ElementTree(root).write(path,encoding="utf-8",xml_declaration=True)
+
+          def run_pass(label, input_path, refresh_only=False):
+              if refresh_only:
+                  os.environ["PUMA_REFRESH_ONLY"]="1"
+              else:
+                  os.environ.pop("PUMA_REFRESH_ONLY",None)
+
+              started=time.monotonic()
+              summary=run_sync(
+                  input_path,
+                  f"/tmp/PUMA_rozetka_{label.lower()}_market_report.xlsx",
+                  selected=["rozetka"],
+                  classic_output_path=f"/tmp/PUMA_rozetka_{label.lower()}_classic_report.xlsx",
+                  supplier="rozetka-serper-lab",
+              )
+              summary["wall_seconds"]=round(time.monotonic()-started,2)
+              Path(f"/tmp/puma-rozetka-{label.lower()}-summary.json").write_text(
+                  json.dumps(summary,ensure_ascii=False,indent=2),encoding="utf-8"
+              )
+              return summary
+
+          # 1) Initial discovery: Rozetka candidates come only from Serper.
+          discovery=run_pass("DISCOVERY","/tmp/puma100.yml",False)
+          print(f"PUMA_ROZETKA_DISCOVERY_SECONDS={discovery['wall_seconds']}",flush=True)
+          print(f"PUMA_ROZETKA_DISCOVERY_FOUND={discovery.get('found_products')}/100",flush=True)
+          print(f"PUMA_ROZETKA_DISCOVERY_OFFERS={discovery.get('offers')}",flush=True)
+          print(f"PUMA_ROZETKA_DISCOVERY_SERPER_REQUESTS={discovery.get('serper_api_requests')}",flush=True)
+          print(f"PUMA_ROZETKA_DISCOVERY_SERPER_CACHE_HITS={discovery.get('serper_cache_hits')}",flush=True)
+          print("PUMA_ROZETKA_DISCOVERY_COVERAGE="+json.dumps(discovery.get("coverage_by_source",{}),ensure_ascii=False),flush=True)
+          print("PUMA_ROZETKA_DISCOVERY_METRICS="+json.dumps(discovery.get("source_discovery",{}),ensure_ascii=False),flush=True)
+
+          # 2) Direct-only fast refresh over identities discovered above.
+          refresh=run_pass("REFRESH","/tmp/puma100.yml",True)
+          print(f"PUMA_ROZETKA_REFRESH_SECONDS={refresh['wall_seconds']}",flush=True)
+          print(f"PUMA_ROZETKA_REFRESH_FOUND={refresh.get('found_products')}/100",flush=True)
+          print(f"PUMA_ROZETKA_REFRESH_SERPER_REQUESTS={refresh.get('serper_api_requests')}",flush=True)
+          print("PUMA_ROZETKA_REFRESH_COVERAGE="+json.dumps(refresh.get("coverage_by_source",{}),ensure_ascii=False),flush=True)
+          print("PUMA_ROZETKA_REFRESH_METRICS="+json.dumps(refresh.get("source_discovery",{}),ensure_ascii=False),flush=True)
+
+          repair=[]
+          gaps=[]
+          for p in refresh.get("product_results") or []:
+              metrics=(((p.get("diagnostics") or {}).get("rozetka") or {}).get("metrics") or {})
+              if metrics.get("repair_required"):
+                  repair.append(p)
+              elif metrics.get("discovery_gap"):
+                  gaps.append(p)
+
+          print(f"PUMA_ROZETKA_REPAIR_QUEUE={len(repair)}",flush=True)
+          print(f"PUMA_ROZETKA_DISCOVERY_GAPS={len(gaps)}",flush=True)
+
+          # 3) Repair only identities that existed but failed direct refresh.
+          repaired=None
+          if repair:
+              repair_path="/tmp/puma-rozetka-repair.yml"
+              write_products(repair_path,repair)
+              repaired=run_pass("REPAIR",repair_path,False)
+          else:
+              repaired={
+                  "wall_seconds":0.0,"found_products":0,"offers":0,
+                  "serper_api_requests":0,"serper_cache_hits":0,
+                  "source_discovery":{},
+              }
+              Path("/tmp/puma-rozetka-repair-summary.json").write_text(
+                  json.dumps(repaired,ensure_ascii=False,indent=2),encoding="utf-8"
+              )
+
+          print(f"PUMA_ROZETKA_REPAIR_SECONDS={repaired.get('wall_seconds',0)}",flush=True)
+          print(f"PUMA_ROZETKA_REPAIR_RECOVERED={repaired.get('found_products',0)}/{len(repair)}",flush=True)
+          print(f"PUMA_ROZETKA_REPAIR_SERPER_REQUESTS={repaired.get('serper_api_requests',0)}",flush=True)
+          print("PUMA_ROZETKA_REPAIR_METRICS="+json.dumps(repaired.get("source_discovery",{}),ensure_ascii=False),flush=True)
+
+          refresh_found={p["article"] for p in refresh.get("product_results") or [] if p.get("status")=="FOUND"}
+          repaired_found={p["article"] for p in repaired.get("product_results") or [] if p.get("status")=="FOUND"}
+          final_found=len(refresh_found | repaired_found)
+
+          final={
+              "discovery_found":int(discovery.get("found_products") or 0),
+              "discovery_seconds":discovery.get("wall_seconds"),
+              "discovery_serper_requests":int(discovery.get("serper_api_requests") or 0),
+              "refresh_found":int(refresh.get("found_products") or 0),
+              "refresh_seconds":refresh.get("wall_seconds"),
+              "refresh_serper_requests":int(refresh.get("serper_api_requests") or 0),
+              "repair_queue":len(repair),
+              "discovery_gaps":len(gaps),
+              "repair_recovered":int(repaired.get("found_products") or 0),
+              "repair_seconds":repaired.get("wall_seconds"),
+              "repair_serper_requests":int(repaired.get("serper_api_requests") or 0),
+              "final_found_products":final_found,
+          }
+          Path("/tmp/puma-rozetka-final-summary.json").write_text(
+              json.dumps(final,ensure_ascii=False,indent=2),encoding="utf-8"
+          )
+          print("PUMA_ROZETKA_FINAL="+json.dumps(final,ensure_ascii=False),flush=True)
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: puma-rozetka-serper-100
+          path: |
+            /tmp/puma-rozetka-*-summary.json
+            /tmp/PUMA_rozetka_*_market_report.xlsx
+            /tmp/PUMA_rozetka_*_classic_report.xlsx
+          if-no-files-found: warn
