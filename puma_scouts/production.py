@@ -374,7 +374,10 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
             if success_query==1:bucket["serper_first_query_success"]+=1
             elif success_query==2:bucket["serper_second_query_success"]+=1
 
-    planned_sources=[s.marketplace.value for s in scout_pool]
+    planned_sources=[getattr(getattr(s,"marketplace",None),"value",None) for s in scout_pool]
+    planned_sources=[src for src in planned_sources if src]
+    if not planned_sources:
+        planned_sources=sorted({x.get("source") for x in rows if x.get("source")})
     source_sets={}
     for m in missions:source_sets[m.article]=set()
     for x in rows:
