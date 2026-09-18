@@ -1,0 +1,119 @@
+name: PUMA 100 A-B Recovery Benchmark
+
+on:
+  push:
+    branches: [puma-performance-recovery]
+    paths:
+      - '.github/workflows/puma-100-ab-recovery.yml'
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: [main, puma-performance-recovery]
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      PYTHONPATH: .
+      PUMA_SOURCE_WALL_TIMEOUT: "70"
+      PUMA_SOURCE_HARD_TIMEOUT: "140"
+      SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install -r requirements.txt
+
+      - name: Rebuild identical 100-product catalog from baseline job
+        run: |
+          python - <<'PY'
+          import json, urllib.request, xml.etree.ElementTree as ET
+
+          url = "https://rizweb-0-2.onrender.com/api/jobs/8fd23d835495"
+          with urllib.request.urlopen(url, timeout=60) as r:
+              payload = json.load(r)
+
+          products = (payload.get("summary") or {}).get("product_results") or []
+          if len(products) < 100:
+              raise SystemExit(f"BASELINE_PRODUCTS_MISSING: {len(products)}")
+
+          root = ET.Element("yml_catalog")
+          shop = ET.SubElement(root, "shop")
+          offers = ET.SubElement(shop, "offers")
+          for i, p in enumerate(products[:100], 1):
+              offer = ET.SubElement(offers, "offer", id=str(p.get("article") or f"ROW-{i}"))
+              fields = {
+                  "name": p.get("name"),
+                  "vendor": p.get("brand"),
+                  "model": p.get("model"),
+                  "price": p.get("own_price"),
+                  "category": p.get("category"),
+                  "supplier": p.get("supplier"),
+                  "old_price": p.get("old_price"),
+                  "discount": p.get("discount"),
+              }
+              for key, value in fields.items():
+                  if value not in (None, ""):
+                      ET.SubElement(offer, key).text = str(value)
+
+          ET.ElementTree(root).write("/tmp/puma100.yml", encoding="utf-8", xml_declaration=True)
+          print("PUMA100_INPUT_PRODUCTS=100", flush=True)
+          PY
+
+      - name: Run production benchmark
+        run: |
+          python - <<'PY'
+          import json, os, time
+          from pathlib import Path
+          from puma_scouts.production import run_sync, PRODUCT_CONCURRENCY
+
+          ref = os.environ.get("MATRIX_REF", "unknown")
+          started = time.monotonic()
+          summary = run_sync(
+              "/tmp/puma100.yml",
+              "/tmp/PUMA_doPUMAgatel_market_report.xlsx",
+              limit=100,
+              selected=["prom","epicentr","hotline","web_shops"],
+              classic_output_path="/tmp/PUMA_classic_analytical_report.xlsx",
+              supplier="benchmark-100",
+          )
+          elapsed = round(time.monotonic() - started, 2)
+          summary["wall_seconds"] = elapsed
+          summary["git_ref"] = ref
+          summary["product_concurrency_runtime"] = PRODUCT_CONCURRENCY
+          Path("/tmp/puma100-summary.json").write_text(
+              json.dumps(summary, ensure_ascii=False, indent=2),
+              encoding="utf-8",
+          )
+
+          print("PUMA100_AB_REF="+ref, flush=True)
+          print("PUMA100_AB_SECONDS="+str(elapsed), flush=True)
+          print("PUMA100_AB_CONCURRENCY="+str(PRODUCT_CONCURRENCY), flush=True)
+          print("PUMA100_AB_FOUND="+str(summary.get("found_products"))+"/100", flush=True)
+          print("PUMA100_AB_OFFERS="+str(summary.get("offers")), flush=True)
+          print("PUMA100_AB_CONFIRMED="+str(summary.get("confirmed")), flush=True)
+          print("PUMA100_AB_PROBABLE="+str(summary.get("probable")), flush=True)
+          print("PUMA100_AB_SERPER_REQUESTS="+str(summary.get("serper_api_requests","n/a")), flush=True)
+          print("PUMA100_AB_SERPER_CACHE_HITS="+str(summary.get("serper_cache_hits","n/a")), flush=True)
+          print("PUMA100_AB_PRICE_VERDICTS="+json.dumps(summary.get("price_verdicts",{}), ensure_ascii=False), flush=True)
+          print("PUMA100_AB_SOURCE_TIMING="+json.dumps(summary.get("source_timing",{}), ensure_ascii=False), flush=True)
+          PY
+        env:
+          MATRIX_REF: ${{ matrix.ref }}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: puma100-${{ matrix.ref }}
+          path: |
+            /tmp/puma100-summary.json
+            /tmp/PUMA_doPUMAgatel_market_report.xlsx
+            /tmp/PUMA_classic_analytical_report.xlsx
+          if-no-files-found: warn
