@@ -1,0 +1,162 @@
+name: PUMA Fast Refresh 100 Benchmark
+
+on:
+  push:
+    branches: [puma-performance-recovery]
+    paths:
+      - '.github/workflows/puma-fast-refresh-benchmark.yml'
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      PYTHONPATH: .
+      PUMA_SOURCE_WALL_TIMEOUT: "70"
+      PUMA_SOURCE_HARD_TIMEOUT: "140"
+      PUMA_RUNTIME_CACHE_PATH: "/tmp/puma-fast-refresh-cache.sqlite"
+      PUMA_IDENTITY_CACHE_SECONDS: "2592000"
+      PUMA_REFRESH_URL_LIMIT: "1"
+      PUMA_REFRESH_WEB_URL_LIMIT: "3"
+      SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: puma-performance-recovery
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install -r requirements.txt
+
+      - name: Verify benchmark configuration
+        run: |
+          if [ -z "${SERPER_API_KEY:-}" ]; then
+            echo "SERPER_REQUIRED_BUT_NOT_CONFIGURED"
+            exit 42
+          fi
+          rm -f /tmp/puma-fast-refresh-cache.sqlite /tmp/puma-fast-refresh-cache.sqlite-wal /tmp/puma-fast-refresh-cache.sqlite-shm
+          echo "SERPER_CONFIGURED=1"
+          echo "FAST_REFRESH_URL_LIMIT=1"
+          echo "FAST_REFRESH_WEB_URL_LIMIT=3"
+
+      - name: Rebuild identical 100-product catalog
+        run: |
+          python - <<'PY'
+          import json, urllib.request, xml.etree.ElementTree as ET
+
+          url = "https://rizweb-0-2.onrender.com/api/jobs/8fd23d835495"
+          with urllib.request.urlopen(url, timeout=60) as r:
+              payload = json.load(r)
+
+          products = (payload.get("summary") or {}).get("product_results") or []
+          if len(products) < 100:
+              raise SystemExit(f"BASELINE_PRODUCTS_MISSING: {len(products)}")
+
+          root = ET.Element("yml_catalog")
+          shop = ET.SubElement(root, "shop")
+          offers = ET.SubElement(shop, "offers")
+          for i, p in enumerate(products[:100], 1):
+              offer = ET.SubElement(offers, "offer", id=str(p.get("article") or f"ROW-{i}"))
+              fields = {
+                  "name": p.get("name"),
+                  "vendor": p.get("brand"),
+                  "model": p.get("model"),
+                  "price": p.get("own_price"),
+                  "category": p.get("category"),
+                  "supplier": p.get("supplier"),
+                  "old_price": p.get("old_price"),
+                  "discount": p.get("discount"),
+              }
+              for key, value in fields.items():
+                  if value not in (None, ""):
+                      ET.SubElement(offer, key).text = str(value)
+
+          ET.ElementTree(root).write("/tmp/puma100.yml", encoding="utf-8", xml_declaration=True)
+          print("PUMA_FAST_INPUT_PRODUCTS=100", flush=True)
+          PY
+
+      - name: Discovery baseline then strict fast refresh
+        run: |
+          python - <<'PY'
+          import json, os, time
+          from pathlib import Path
+          from puma_scouts.production import run_sync, PRODUCT_CONCURRENCY
+
+          selected=["prom","epicentr","hotline","web_shops"]
+
+          def run_pass(label, refresh_only, report_path, classic_path, summary_path):
+              if refresh_only:
+                  os.environ["PUMA_REFRESH_ONLY"]="1"
+              else:
+                  os.environ.pop("PUMA_REFRESH_ONLY", None)
+
+              started=time.monotonic()
+              summary=run_sync(
+                  "/tmp/puma100.yml",
+                  report_path,
+                  limit=100,
+                  selected=selected,
+                  classic_output_path=classic_path,
+                  supplier="fast-refresh-100",
+              )
+              elapsed=round(time.monotonic()-started,2)
+              summary["wall_seconds"]=elapsed
+              summary["pass_label"]=label
+              summary["product_concurrency_runtime"]=PRODUCT_CONCURRENCY
+              Path(summary_path).write_text(
+                  json.dumps(summary, ensure_ascii=False, indent=2),
+                  encoding="utf-8",
+              )
+              print(f"PUMA_FAST_{label}_SECONDS={elapsed}", flush=True)
+              print(f"PUMA_FAST_{label}_FOUND={summary.get('found_products')}/100", flush=True)
+              print(f"PUMA_FAST_{label}_OFFERS={summary.get('offers')}", flush=True)
+              print(f"PUMA_FAST_{label}_SERPER_REQUESTS={summary.get('serper_api_requests')}", flush=True)
+              print(f"PUMA_FAST_{label}_COVERAGE="+json.dumps(summary.get("coverage_by_source",{}), ensure_ascii=False), flush=True)
+              print(f"PUMA_FAST_{label}_ALL_SOURCES={summary.get('all_sources_products')}/100", flush=True)
+              print(f"PUMA_FAST_{label}_SOURCE_COUNTS="+json.dumps(summary.get("source_count_distribution",{}), ensure_ascii=False), flush=True)
+              print(f"PUMA_FAST_{label}_DISCOVERY="+json.dumps(summary.get("source_discovery",{}), ensure_ascii=False), flush=True)
+              return summary
+
+          first=run_pass(
+              "DISCOVERY",
+              False,
+              "/tmp/PUMA_fast_discovery_market_report.xlsx",
+              "/tmp/PUMA_fast_discovery_classic_report.xlsx",
+              "/tmp/puma-fast-discovery-summary.json",
+          )
+          refresh=run_pass(
+              "REFRESH",
+              True,
+              "/tmp/PUMA_fast_refresh_market_report.xlsx",
+              "/tmp/PUMA_fast_refresh_classic_report.xlsx",
+              "/tmp/puma-fast-refresh-summary.json",
+          )
+
+          first_seconds=float(first.get("wall_seconds") or 0)
+          refresh_seconds=float(refresh.get("wall_seconds") or 0)
+          repair_total=sum(
+              int((bucket or {}).get("repair_required_products") or 0)
+              for bucket in (refresh.get("source_discovery") or {}).values()
+          )
+          print("PUMA_FAST_REFRESH_SPEEDUP="+str(
+              round(first_seconds/max(0.01,refresh_seconds),2)
+          ), flush=True)
+          print("PUMA_FAST_REFRESH_REPAIR_QUEUE="+str(repair_total), flush=True)
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: puma-fast-refresh-100
+          path: |
+            /tmp/puma-fast-discovery-summary.json
+            /tmp/puma-fast-refresh-summary.json
+            /tmp/PUMA_fast_discovery_market_report.xlsx
+            /tmp/PUMA_fast_discovery_classic_report.xlsx
+            /tmp/PUMA_fast_refresh_market_report.xlsx
+            /tmp/PUMA_fast_refresh_classic_report.xlsx
+          if-no-files-found: warn
