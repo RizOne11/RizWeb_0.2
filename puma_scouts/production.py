@@ -362,7 +362,7 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
         for src,d in source_map.items():
             bucket=source_discovery.setdefault(src,{
                 "products":0,"identity_refresh_hits":0,"identity_urls_loaded":0,"identity_urls_attempted":0,
-                "identity_urls_saved":0,"repair_required_products":0,
+                "identity_urls_saved":0,"repair_required_products":0,"discovery_gap_products":0,
                 "serper_queries_attempted":0,"serper_api_requests":0,"serper_cache_hits":0,
                 "serper_rescued_products":0,"serper_first_query_success":0,"serper_second_query_success":0,
             })
@@ -373,6 +373,7 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
             bucket["identity_urls_attempted"]+=int(metrics.get("identity_urls_attempted") or 0)
             bucket["identity_urls_saved"]+=int(metrics.get("identity_urls_saved") or 0)
             bucket["repair_required_products"]+=int(bool(metrics.get("repair_required")))
+            bucket["discovery_gap_products"]+=int(bool(metrics.get("discovery_gap")))
             bucket["serper_queries_attempted"]+=int(metrics.get("serper_queries_attempted") or 0)
             bucket["serper_api_requests"]+=int(metrics.get("serper_api_requests") or 0)
             bucket["serper_cache_hits"]+=int(metrics.get("serper_cache_hits") or 0)
