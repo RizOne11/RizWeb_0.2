@@ -137,3 +137,64 @@ def test_webshops_identity_hit_skips_discovery_and_serper(monkeypatch):
     assert report.metrics["identity_refresh_hit"] is True
     assert report.metrics["identity_urls_loaded"] == 1
     assert report.metrics["serper_queries_attempted"] == 0
+
+
+
+def test_shared_http_client_reused_for_scout_lifetime():
+    scout = WebShopsScout(timeout=1, max_candidates_per_query=5)
+
+    async def scenario():
+        first = await scout.http_client()
+        second = await scout.http_client()
+        assert first is second
+        assert not first.is_closed
+        await scout.aclose()
+        assert first.is_closed
+
+    asyncio.run(scenario())
+
+
+def test_refresh_only_marks_repair_without_discovery(monkeypatch):
+    scout = WebShopsScout(timeout=1, max_candidates_per_query=5)
+    mission = _mission()
+    free_search_calls = 0
+    seen_limit = None
+
+    async def fake_queries(_mission):
+        return ["Honda EU35i"]
+
+    async def should_not_search(client, query):
+        nonlocal free_search_calls
+        free_search_calls += 1
+        return []
+
+    async def dead_identity(client, mission, query, urls, method):
+        assert method == "identity-refresh"
+        return []
+
+    def load_urls(*args, **kwargs):
+        nonlocal seen_limit
+        seen_limit = kwargs.get("limit")
+        return ["https://shop.example.ua/honda-eu35i"]
+
+    monkeypatch.setenv("PUMA_REFRESH_ONLY", "1")
+    monkeypatch.delenv("PUMA_REFRESH_WEB_URL_LIMIT", raising=False)
+    monkeypatch.setattr(web_module, "load_identity_urls", load_urls)
+    monkeypatch.setattr(scout, "generate_queries", fake_queries)
+    monkeypatch.setattr(scout, "_urls", should_not_search)
+    monkeypatch.setattr(scout, "_fetch_urls", dead_identity)
+
+    async def scenario():
+        try:
+            return await scout.scan(mission)
+        finally:
+            await scout.aclose()
+
+    report = asyncio.run(scenario())
+
+    assert seen_limit == 3
+    assert free_search_calls == 0
+    assert report.metrics["refresh_only"] is True
+    assert report.metrics["repair_required"] is True
+    assert report.metrics["serper_queries_attempted"] == 0
+    assert report.offers == []
