@@ -344,8 +344,12 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
         }
         for src,vals in timing_samples.items()
     }
-    serper_api_requests=sum(int(getattr(getattr(s,"serper",None),"api_requests",0) or 0) for s in scout_pool)
-    serper_cache_hits=sum(int(getattr(getattr(s,"serper",None),"cache_hits",0) or 0) for s in scout_pool)
+    serper_clients=[getattr(s,"serper",None) for s in scout_pool if getattr(s,"serper",None) is not None]
+    serper_api_requests=sum(int(getattr(s,"api_requests",0) or 0) for s in serper_clients)
+    serper_cache_hits=sum(int(getattr(s,"cache_hits",0) or 0) for s in serper_clients)
+    serper_configured=bool(os.getenv("SERPER_API_KEY","").strip())
+    serper_enabled=bool(serper_clients) and all(bool(getattr(s,"enabled",False)) for s in serper_clients)
+    serper_disabled_reasons=sorted({str(getattr(s,"disabled_reason","") or "") for s in serper_clients if getattr(s,"disabled_reason","")})
     price_verdicts=Counter(p.get("price_verdict","") for p in products if p.get("price_verdict"))
     web_products=[{k:v for k,v in p.items() if k!="offer_rows"}|{"offers_detail":p["offer_rows"]} for p in products]
     return {
@@ -354,6 +358,8 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
         "confirmed":confidence.get("CONFIRMED",0),"probable":confidence.get("PROBABLE",0),
         "product_concurrency":PRODUCT_CONCURRENCY,"source_timing":source_timing,
         "serper_api_requests":serper_api_requests,"serper_cache_hits":serper_cache_hits,
+        "serper_configured":serper_configured,"serper_enabled":serper_enabled,
+        "serper_disabled_reasons":serper_disabled_reasons,
         "price_verdicts":dict(price_verdicts),
         "product_results":web_products,
     }
