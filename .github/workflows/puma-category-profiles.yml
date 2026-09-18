@@ -1,0 +1,22 @@
+name: PUMA Category Profiles Regression
+
+on:
+  push:
+    branches: [puma-category-profiles]
+
+jobs:
+  category-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt pytest
+      - name: Category profile regressions
+        run: pytest -q tests/test_category_profiles.py
+      - name: Full regression suite
+        run: pytest -q tests
