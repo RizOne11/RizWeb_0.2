@@ -21,4 +21,4 @@ jobs:
       - run: pip install -r requirements.txt pytest
       - name: Full regression suite
         run: pytest -q tests
-      # lingua-brand-query verification
+      # price-score verification
