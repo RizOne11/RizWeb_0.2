@@ -31,7 +31,7 @@ def test_production_checkpoint_resumes_only_unfinished_products(tmp_path, monkey
 
     calls = []
 
-    async def first_scan(mission, selected=None):
+    async def first_scan(mission, selected=None, scout_pool=None):
         calls.append(mission.article)
         if mission.article == "A2":
             raise RuntimeError("simulated worker death")
@@ -62,7 +62,7 @@ def test_production_checkpoint_resumes_only_unfinished_products(tmp_path, monkey
 
     resumed_calls = []
 
-    async def resumed_scan(mission, selected=None):
+    async def resumed_scan(mission, selected=None, scout_pool=None):
         resumed_calls.append(mission.article)
         return [], {"prom": {"health": ScanHealth.NOT_FOUND.value, "errors": []}}
 
@@ -104,7 +104,7 @@ def test_checkpoint_from_different_build_is_not_reused(tmp_path, monkeypatch):
 
     calls = []
 
-    async def scan(mission, selected=None):
+    async def scan(mission, selected=None, scout_pool=None):
         calls.append(mission.article)
         return [], {}
 
