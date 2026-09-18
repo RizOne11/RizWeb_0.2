@@ -127,3 +127,5 @@ jobs:
             /tmp/PUMA_doPUMAgatel_market_report.xlsx
             /tmp/PUMA_classic_analytical_report.xlsx
           if-no-files-found: warn
+
+# serper-ready-rerun
