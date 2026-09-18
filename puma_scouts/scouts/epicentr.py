@@ -179,7 +179,7 @@ class EpicentrScout(MarketplaceScout):
         key = _canonical_url(url)
         if self.cache and self.page_cache_ttl > 0:
             try:
-                cached = self.cache.get(key, self.page_cache_ttl)
+                cached = await asyncio.to_thread(self.cache.get, key, self.page_cache_ttl)
                 if cached is not None:
                     return cached
             except Exception:
@@ -187,7 +187,7 @@ class EpicentrScout(MarketplaceScout):
         page = await self._get(client, url)
         if self.cache and self.page_cache_ttl > 0:
             try:
-                self.cache.put(key, page)
+                await asyncio.to_thread(self.cache.put, key, page)
             except Exception:
                 pass
         return page
