@@ -53,7 +53,11 @@ def _load_previous_jobs():
     for p in JOBS_DIR.glob("*/status.json"):
         try:
             data=json.loads(p.read_text(encoding="utf-8"));jid=data.get("id") or p.parent.name
-            if data.get("status") in {"queued","running"}:data["status"]="interrupted";data["message"]="Попередній процес перервався. Запусти аналіз повторно."
+            if data.get("status") in {"queued","running"}:
+                checkpoint=p.parent/"checkpoint.json"
+                data["status"]="interrupted"
+                data["resume_available"]=checkpoint.exists() and (data.get("engine_build") or ENGINE_BUILD)==ENGINE_BUILD
+                data["message"]="Попередній процес перервався. Можна продовжити з останньої контрольної точки." if data["resume_available"] else "Попередній процес перервався. Запусти аналіз повторно."
             with _lock:_jobs[jid]=data
         except Exception:continue
 
@@ -76,14 +80,45 @@ def worker(job_id,input_path,limit,selected_markets,supplier):
     d=JOBS_DIR/job_id
     xlsx=d/"PUMA_doPUMAgatel_market_report.xlsx"
     classic_xlsx=d/"PUMA_classic_analytical_report.xlsx"
-    def progress(current,total,name,extra=None):set_job(job_id,status="running",current=current,total=total,percent=round(current/max(1,total)*100,1),current_product=name,message=extra or "Аналізуємо ринок…")
+    checkpoint=d/"checkpoint.json"
+    def progress(current,total,name,extra=None):
+        set_job(
+            job_id,status="running",current=current,total=total,
+            percent=round(current/max(1,total)*100,1),current_product=name,
+            message=extra or "Аналізуємо ринок…",
+            resume_available=checkpoint.exists(),
+        )
     try:
-        set_job(job_id,status="running",message="Читаємо каталог…",started_at=time.time(),engine_build=ENGINE_BUILD)
-        summary=run_sync(str(input_path),str(xlsx),limit=limit,selected=selected_markets,progress_cb=progress,classic_output_path=str(classic_xlsx),supplier=supplier)
-        set_job(job_id,status="done",percent=100,message="Готово",finished_at=time.time(),summary=summary,xlsx_file=str(xlsx),classic_xlsx_file=str(classic_xlsx),resume_available=False,engine_build=ENGINE_BUILD)
-    except Exception as e:set_job(job_id,status="error",message=f"{type(e).__name__}: {e}",finished_at=time.time(),resume_available=False,engine_build=ENGINE_BUILD)
+        previous=get_job(job_id) or {}
+        same_build=(previous.get("engine_build") or ENGINE_BUILD)==ENGINE_BUILD
+        resuming=checkpoint.exists() and same_build
+        started_at=previous.get("started_at") or time.time()
+        resume_count=int(previous.get("resume_count") or 0)+(1 if resuming else 0)
+        set_job(
+            job_id,status="running",
+            message="Відновлюємо аналіз з контрольної точки…" if resuming else "Читаємо каталог…",
+            started_at=started_at,resumed_at=time.time() if resuming else previous.get("resumed_at"),
+            resume_count=resume_count,resume_available=resuming,engine_build=ENGINE_BUILD,
+        )
+        summary=run_sync(
+            str(input_path),str(xlsx),limit=limit,selected=selected_markets,
+            progress_cb=progress,classic_output_path=str(classic_xlsx),supplier=supplier,
+            checkpoint_path=str(checkpoint),checkpoint_token=ENGINE_BUILD,
+        )
+        set_job(
+            job_id,status="done",percent=100,message="Готово",finished_at=time.time(),
+            summary=summary,xlsx_file=str(xlsx),classic_xlsx_file=str(classic_xlsx),
+            resume_available=False,engine_build=ENGINE_BUILD,
+        )
+        checkpoint.unlink(missing_ok=True)
+    except Exception as e:
+        set_job(
+            job_id,status="error",message=f"{type(e).__name__}: {e}",finished_at=time.time(),
+            resume_available=checkpoint.exists(),engine_build=ENGINE_BUILD,
+        )
     finally:
         with _lock:_running_threads.discard(job_id)
+
 def _start_worker(jid):
     j=get_job(jid)
     if not j or _thread_alive(jid):return False
@@ -176,7 +211,25 @@ def download_classic_xlsx(job_id):
 @app.post("/api/jobs/<job_id>/cancel")
 def cancel_job(job_id):return jsonify({"ok":False,"message":"Production v1.3 runs bounded parallel products; cancel will return in the next build."}),409
 @app.post("/api/jobs/<job_id>/resume")
-def resume_job(job_id):return jsonify({"ok":False,"message":"Production v1.3: restart the analysis with the same catalog file."}),409
+def resume_job(job_id):
+    j=get_job(job_id)
+    if not j:abort(404)
+    if j.get("status")=="done":return jsonify({"ok":False,"message":"Job already completed."}),409
+    if _thread_alive(job_id):return jsonify({"ok":True,"job_id":job_id,"reused":True,"resume_from_checkpoint":True})
+    src=JOBS_DIR/job_id/(j.get("filename") or "")
+    if not src.exists():return jsonify({"ok":False,"message":"Вхідний файл цього job більше не доступний."}),404
+    checkpoint=JOBS_DIR/job_id/"checkpoint.json"
+    same_build=(j.get("engine_build") or ENGINE_BUILD)==ENGINE_BUILD
+    resume_from_checkpoint=checkpoint.exists() and same_build
+    if checkpoint.exists() and not same_build:
+        checkpoint.unlink(missing_ok=True)
+    set_job(
+        job_id,status="queued",message="Відновлення поставлено в чергу",
+        resume_available=resume_from_checkpoint,engine_build=ENGINE_BUILD,
+    )
+    started=_start_worker(job_id)
+    if not started:return jsonify({"ok":False,"message":"Не вдалося запустити відновлення."}),409
+    return jsonify({"ok":True,"job_id":job_id,"reused":False,"resume_from_checkpoint":resume_from_checkpoint})
 @app.errorhandler(413)
 def too_large(_):return render_template("error.html",message=f"Файл завеликий. Ліміт сервера: {MAX_UPLOAD_MB} МБ."),413
 if __name__=="__main__":app.run(host="0.0.0.0",port=int(os.getenv("PORT","8080")),debug=False)
