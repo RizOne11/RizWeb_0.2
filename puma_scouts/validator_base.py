@@ -4,12 +4,13 @@ import re
 from typing import Any
 
 from puma_scouts.models import IdentityConfidence, Marketplace, Offer, ProductMission, ValidatedOffer, Verdict
+from puma_scouts.lingua import brand_aliases, fold_ru_ua_tokens
 from puma_scouts.query import article_is_published, extract_identifiers, identifier_in_text
 from puma_scouts.variant_engine import explicit_model_agreement, generation_confirmation, named_generations, signature, variant_conflicts
 
 
 def _norm(value: Any) -> str:
-    text = str(value or "").casefold()
+    text = fold_ru_ua_tokens(str(value or "").casefold())
     text = re.sub(r"[^\w]+", " ", text, flags=re.UNICODE)
     return re.sub(r"\s+", " ", text).strip()
 
@@ -67,7 +68,23 @@ def _model_match(expected: str | None, offer_text: str) -> bool:
 
 
 def _brand_match(expected: str | None, offer_text: str) -> bool:
-    return True if not expected else bool(_compact(expected) and _compact(expected) in _compact(offer_text))
+    if not expected:
+        return True
+    normalized = _norm(offer_text)
+    compact_text = _compact(offer_text)
+    for alias in brand_aliases(expected):
+        alias_norm = _norm(alias)
+        alias_compact = _compact(alias)
+        if not alias_compact:
+            continue
+        # Boundary match prevents the legacy short alias "mi" from matching
+        # unrelated words such as "premium", while retaining Xiaomi/Redmi/Poco
+        # family behaviour from priceintel.
+        if re.search(rf"(?<!\w){re.escape(alias_norm)}(?!\w)", normalized, re.I):
+            return True
+        if len(alias_compact) >= 4 and alias_compact in compact_text:
+            return True
+    return False
 
 
 def _brand_conflict(expected: str | None, offer_text: str) -> str | None:
