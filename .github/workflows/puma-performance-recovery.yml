@@ -5,6 +5,8 @@ on:
     branches: [puma-performance-recovery]
     paths:
       - '.github/workflows/puma-performance-recovery.yml'
+      - 'puma_scouts/**'
+      - 'tests/**'
 
 jobs:
   tests:
@@ -21,4 +23,4 @@ jobs:
       - run: pip install -r requirements.txt pytest
       - name: Full regression suite
         run: pytest -q tests
-      # price-score verification rerun
+      # performance recovery branch gate
