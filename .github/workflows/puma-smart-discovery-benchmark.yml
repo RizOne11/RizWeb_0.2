@@ -1,0 +1,153 @@
+name: PUMA Smart Discovery 100 Benchmark
+
+on:
+  push:
+    branches: [puma-performance-recovery]
+    paths:
+      - '.github/workflows/puma-smart-discovery-benchmark.yml'
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      PYTHONPATH: .
+      PUMA_SOURCE_WALL_TIMEOUT: "70"
+      PUMA_SOURCE_HARD_TIMEOUT: "140"
+      PUMA_RUNTIME_CACHE_PATH: "/tmp/puma-smart-cache.sqlite"
+      PUMA_IDENTITY_CACHE_SECONDS: "2592000"
+      SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: puma-performance-recovery
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install -r requirements.txt
+
+      - name: Verify benchmark configuration
+        run: |
+          if [ -z "${SERPER_API_KEY:-}" ]; then
+            echo "SERPER_REQUIRED_BUT_NOT_CONFIGURED"
+            exit 42
+          fi
+          rm -f /tmp/puma-smart-cache.sqlite /tmp/puma-smart-cache.sqlite-wal /tmp/puma-smart-cache.sqlite-shm
+          echo "SERPER_CONFIGURED=1"
+          echo "IDENTITY_CACHE_FRESH=1"
+
+      - name: Rebuild identical 100-product catalog
+        run: |
+          python - <<'PY'
+          import json, urllib.request, xml.etree.ElementTree as ET
+
+          url = "https://rizweb-0-2.onrender.com/api/jobs/8fd23d835495"
+          with urllib.request.urlopen(url, timeout=60) as r:
+              payload = json.load(r)
+
+          products = (payload.get("summary") or {}).get("product_results") or []
+          if len(products) < 100:
+              raise SystemExit(f"BASELINE_PRODUCTS_MISSING: {len(products)}")
+
+          root = ET.Element("yml_catalog")
+          shop = ET.SubElement(root, "shop")
+          offers = ET.SubElement(shop, "offers")
+          for i, p in enumerate(products[:100], 1):
+              offer = ET.SubElement(offers, "offer", id=str(p.get("article") or f"ROW-{i}"))
+              fields = {
+                  "name": p.get("name"),
+                  "vendor": p.get("brand"),
+                  "model": p.get("model"),
+                  "price": p.get("own_price"),
+                  "category": p.get("category"),
+                  "supplier": p.get("supplier"),
+                  "old_price": p.get("old_price"),
+                  "discount": p.get("discount"),
+              }
+              for key, value in fields.items():
+                  if value not in (None, ""):
+                      ET.SubElement(offer, key).text = str(value)
+
+          ET.ElementTree(root).write("/tmp/puma100.yml", encoding="utf-8", xml_declaration=True)
+          print("PUMA_SMART_INPUT_PRODUCTS=100", flush=True)
+          PY
+
+      - name: First discovery pass and direct-refresh pass
+        run: |
+          python - <<'PY'
+          import json, time
+          from pathlib import Path
+          from puma_scouts.production import run_sync, PRODUCT_CONCURRENCY
+
+          selected=["prom","epicentr","hotline","web_shops"]
+
+          def run_pass(label, report_path, classic_path, summary_path):
+              started=time.monotonic()
+              summary=run_sync(
+                  "/tmp/puma100.yml",
+                  report_path,
+                  limit=100,
+                  selected=selected,
+                  classic_output_path=classic_path,
+                  supplier="smart-discovery-100",
+              )
+              elapsed=round(time.monotonic()-started,2)
+              summary["wall_seconds"]=elapsed
+              summary["pass_label"]=label
+              summary["product_concurrency_runtime"]=PRODUCT_CONCURRENCY
+              Path(summary_path).write_text(
+                  json.dumps(summary, ensure_ascii=False, indent=2),
+                  encoding="utf-8",
+              )
+              print(f"PUMA_SMART_{label}_SECONDS={elapsed}", flush=True)
+              print(f"PUMA_SMART_{label}_FOUND={summary.get('found_products')}/100", flush=True)
+              print(f"PUMA_SMART_{label}_OFFERS={summary.get('offers')}", flush=True)
+              print(f"PUMA_SMART_{label}_SERPER_REQUESTS={summary.get('serper_api_requests')}", flush=True)
+              print(f"PUMA_SMART_{label}_SERPER_CACHE_HITS={summary.get('serper_cache_hits')}", flush=True)
+              print(f"PUMA_SMART_{label}_COVERAGE="+json.dumps(summary.get("coverage_by_source",{}), ensure_ascii=False), flush=True)
+              print(f"PUMA_SMART_{label}_ALL_SOURCES={summary.get('all_sources_products')}/100", flush=True)
+              print(f"PUMA_SMART_{label}_SOURCE_COUNTS="+json.dumps(summary.get("source_count_distribution",{}), ensure_ascii=False), flush=True)
+              print(f"PUMA_SMART_{label}_DISCOVERY="+json.dumps(summary.get("source_discovery",{}), ensure_ascii=False), flush=True)
+              return summary
+
+          first=run_pass(
+              "FIRST",
+              "/tmp/PUMA_smart_first_market_report.xlsx",
+              "/tmp/PUMA_smart_first_classic_report.xlsx",
+              "/tmp/puma-smart-first-summary.json",
+          )
+          refresh=run_pass(
+              "REFRESH",
+              "/tmp/PUMA_smart_refresh_market_report.xlsx",
+              "/tmp/PUMA_smart_refresh_classic_report.xlsx",
+              "/tmp/puma-smart-refresh-summary.json",
+          )
+
+          first_serper=int(first.get("serper_api_requests") or 0)
+          refresh_serper=int(refresh.get("serper_api_requests") or 0)
+          first_seconds=float(first.get("wall_seconds") or 0)
+          refresh_seconds=float(refresh.get("wall_seconds") or 0)
+          print("PUMA_SMART_SERPER_REDUCTION_PCT="+str(
+              round((1-refresh_serper/max(1,first_serper))*100,1)
+          ), flush=True)
+          print("PUMA_SMART_REFRESH_SPEEDUP="+str(
+              round(first_seconds/max(0.01,refresh_seconds),2)
+          ), flush=True)
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: puma-smart-discovery-100
+          path: |
+            /tmp/puma-smart-first-summary.json
+            /tmp/puma-smart-refresh-summary.json
+            /tmp/PUMA_smart_first_market_report.xlsx
+            /tmp/PUMA_smart_first_classic_report.xlsx
+            /tmp/PUMA_smart_refresh_market_report.xlsx
+            /tmp/PUMA_smart_refresh_classic_report.xlsx
+          if-no-files-found: warn
