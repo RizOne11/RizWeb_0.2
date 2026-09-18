@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import html as html_lib
-import os
 from collections import defaultdict
 from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlsplit
 
@@ -38,7 +37,6 @@ class WebShopsScout(MarketplaceScout):
         self.serper = SerperDiscovery(max_results=max_candidates_per_query, timeout=min(timeout, 10.0))
         self.cache = runtime_cache()
         self.page_cache_ttl = page_cache_seconds()
-        self.query_concurrency = max(1, min(int(os.getenv("PUMA_WEBSHOPS_QUERY_CONCURRENCY", "2")), 5))
 
     async def generate_queries(self, mission: ProductMission):
         article = mission.article.casefold().strip()
@@ -93,7 +91,7 @@ class WebShopsScout(MarketplaceScout):
         key = _canonical(url)
         if self.cache and self.page_cache_ttl > 0:
             try:
-                cached = self.cache.get(key, self.page_cache_ttl)
+                cached = await asyncio.to_thread(self.cache.get, key, self.page_cache_ttl)
                 if cached is not None:
                     return cached
             except Exception:
@@ -101,7 +99,7 @@ class WebShopsScout(MarketplaceScout):
         page = await self._get(client, url)
         if self.cache and self.page_cache_ttl > 0:
             try:
-                self.cache.put(key, page)
+                await asyncio.to_thread(self.cache.put, key, page)
             except Exception:
                 pass
         return page
@@ -211,27 +209,16 @@ class WebShopsScout(MarketplaceScout):
         unique = {}
         errors = []
         seen = 0
-        query_sem = asyncio.Semaphore(self.query_concurrency)
 
-        async with httpx.AsyncClient(
-            timeout=self.timeout,
-            limits=httpx.Limits(max_connections=30, max_keepalive_connections=15),
-        ) as client:
-            async def native_batch(query):
-                async with query_sem:
-                    try:
-                        urls = await self._urls(client, query)
-                        offers = await self._fetch_urls(client, mission, query, urls, "free-web-search")
-                        return query, urls, offers, None
-                    except Exception as exc:
-                        return query, [], [], exc
-
-            batches = await asyncio.gather(*(native_batch(query) for query in queries))
-            for query, urls, offers, exc in batches:
-                if exc is not None:
-                    errors.append(f"native {query!r}: {exc}")
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            for query in queries:
+                try:
+                    urls = await self._urls(client, query)
+                    seen += len(urls)
+                    offers = await self._fetch_urls(client, mission, query, urls, "free-web-search")
+                except Exception as exc:
+                    errors.append(str(exc))
                     continue
-                seen += len(urls)
                 for offer in offers:
                     unique.setdefault(str(offer.url), offer)
 
@@ -239,21 +226,14 @@ class WebShopsScout(MarketplaceScout):
             passes = [item for item in validated if item.verdict == Verdict.PASS]
 
             if not passes and self.serper.enabled:
-                async def serper_batch(query):
-                    async with query_sem:
-                        try:
-                            urls = await self._serper_urls(client, query)
-                            offers = await self._fetch_urls(client, mission, query, urls, "serper")
-                            return query, urls, offers, None
-                        except Exception as exc:
-                            return query, [], [], exc
-
-                batches = await asyncio.gather(*(serper_batch(query) for query in queries[:2]))
-                for query, urls, offers, exc in batches:
-                    if exc is not None:
+                for query in queries[:2]:
+                    try:
+                        urls = await self._serper_urls(client, query)
+                        seen += len(urls)
+                        offers = await self._fetch_urls(client, mission, query, urls, "serper")
+                    except Exception as exc:
                         errors.append(f"serper {query!r}: {exc}")
                         continue
-                    seen += len(urls)
                     for offer in offers:
                         unique.setdefault(str(offer.url), offer)
 
