@@ -224,7 +224,7 @@ def product_report(missions:list[ProductMission],rows:list[dict[str,Any]],diagno
             "confirmed":conf.get("CONFIRMED",0),"probable":conf.get("PROBABLE",0),
             "price_score":market["price_score"],"price_verdict":market["price_verdict"],
             "price_verdict_reason":market["price_verdict_reason"],"market_confidence":market["market_confidence"],
-            "suspicious_price_count":market["suspicious_price_count"],"reserve_uah":market["reserve_uah"],
+            "suspicious_price_count":market["suspicious_price_count"],"valid_offer_count":market["valid_offer_count"],"reserve_uah":market["reserve_uah"],
             "reserve_pct":market["reserve_pct"],"delta_median_pct":market["delta_median_pct"],
             "same_price_count":market["same_price_count"],"market_representatives":market["market_representatives"],
             "offer_rows":offers,"diagnostics":diagnostics_by_article.get(m.article,{})
