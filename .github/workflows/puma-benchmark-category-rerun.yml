@@ -1,4 +1,4 @@
-name: PUMA Benchmark 100 Category Status
+name: PUMA Benchmark 100 Category Restart
 
 on:
   push:
@@ -7,12 +7,12 @@ on:
       - '.github/workflows/puma-benchmark-category-rerun.yml'
 
 jobs:
-  status:
+  restart:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 5
     steps:
-      - name: Show benchmark status
+      - name: Restart exact benchmark-100
         run: |
           set -euo pipefail
-          curl -fsS 'https://rizweb-0-2.onrender.com/api/jobs/bd16788a7d4f'
-# status-probe-now
+          curl -fsS -X POST 'https://rizweb-0-2.onrender.com/api/jobs/8fd23d835495/rerun?limit=100'
+# restart-after-instance-reboot
