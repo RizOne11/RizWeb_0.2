@@ -83,4 +83,4 @@ jobs:
           if price_integrity:
               raise SystemExit('EXACT5_PRICE_INTEGRITY_FAILED')
           PY
-# exact-five verification trigger 2026-09-17 main production gate
+# exact-five performance-recovery clean rerun
