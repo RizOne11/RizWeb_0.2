@@ -5,6 +5,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from puma_scouts.models import ProductMission
+from puma_scouts.lingua import query_language_variants
 
 _ID_KEYS = ("ean", "gtin", "mpn", "model", "vendorcode", "vendor_code", "sku", "code")
 _NAME_KEYS = ("name", "title", "название", "назва")
@@ -127,7 +128,10 @@ def generate_queries(mission: ProductMission) -> list[str]:
             queries.append(value)
 
     # The descriptive name remains useful; only the supplier article is removed.
-    add(name)
+    # Add deterministic RU/UA lexical variants as separate Discovery queries.
+    # Model codes, brands, measurements and identifiers remain untouched.
+    for value in query_language_variants(name or ""):
+        add(value)
 
     # Independent product identifiers are valid Discovery signals. The row
     # article itself has already been excluded by extract_identifiers().
@@ -140,6 +144,8 @@ def generate_queries(mission: ProductMission) -> list[str]:
     # descriptive name. Fewer high-quality queries leave budget for extraction
     # and the Serper recovery layer.
     if brand and name and _compact(brand) not in _compact(name):
-        add(" ".join([brand, *name.split()[:7]]))
+        brand_query = " ".join([brand, *name.split()[:7]])
+        for value in query_language_variants(brand_query):
+            add(value)
 
     return queries[:12]
