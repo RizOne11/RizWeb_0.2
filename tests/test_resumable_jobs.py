@@ -77,7 +77,8 @@ def test_production_checkpoint_resumes_only_unfinished_products(tmp_path, monkey
 
     assert resumed_calls == ["A2", "A3"]
     assert summary["products"] == 3
-    assert not checkpoint.exists()
+    final_checkpoint = json.loads(checkpoint.read_text(encoding="utf-8"))
+    assert final_checkpoint["completed_indexes"] == [0, 1, 2]
 
 
 def test_checkpoint_from_different_build_is_not_reused(tmp_path, monkeypatch):
