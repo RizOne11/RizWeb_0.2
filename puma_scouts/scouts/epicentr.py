@@ -15,6 +15,7 @@ from puma_scouts.models import Marketplace, Offer, ProductMission, ScanHealth, S
 from puma_scouts.query import generate_queries
 from puma_scouts.scouts.base import MarketplaceScout
 from puma_scouts.serper import SerperDiscovery
+from puma_scouts.runtime_cache import page_cache_seconds, runtime_cache
 from puma_scouts.validator import validate_offer
 
 _EPICENTR_HOSTS = {"epicentrk.ua", "www.epicentrk.ua"}
@@ -155,6 +156,8 @@ class EpicentrScout(MarketplaceScout):
             "Accept-Language": "uk-UA,uk;q=0.9,ru;q=0.7,en;q=0.5",
         }
         self.serper = SerperDiscovery(max_results=max_candidates_per_query, timeout=min(timeout, 10.0))
+        self.cache = runtime_cache()
+        self.page_cache_ttl = page_cache_seconds()
 
     async def generate_queries(self, mission: ProductMission) -> list[str]:
         article = mission.article.casefold().strip()
@@ -171,6 +174,23 @@ class EpicentrScout(MarketplaceScout):
         response = await client.get(url, headers=self.headers, follow_redirects=True)
         response.raise_for_status()
         return response.text
+
+    async def _get_product(self, client: httpx.AsyncClient, url: str) -> str:
+        key = _canonical_url(url)
+        if self.cache and self.page_cache_ttl > 0:
+            try:
+                cached = self.cache.get(key, self.page_cache_ttl)
+                if cached is not None:
+                    return cached
+            except Exception:
+                pass
+        page = await self._get(client, url)
+        if self.cache and self.page_cache_ttl > 0:
+            try:
+                self.cache.put(key, page)
+            except Exception:
+                pass
+        return page
 
     async def _candidate_urls(self, client: httpx.AsyncClient, query: str) -> list[str]:
         found = {}
@@ -207,7 +227,7 @@ class EpicentrScout(MarketplaceScout):
     async def _fetch_offers(self, client, mission, query, urls, method):
         async def one(url):
             try:
-                return _offer_from_page(mission.article, url, await self._get(client, url), query, method)
+                return _offer_from_page(mission.article, url, await self._get_product(client, url), query, method)
             except (httpx.HTTPError, ValueError, json.JSONDecodeError):
                 return None
         result = await asyncio.gather(*(one(url) for url in urls))
