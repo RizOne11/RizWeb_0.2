@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import html as html_lib
+import os
 from collections import defaultdict
 from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlsplit
 
@@ -13,6 +14,7 @@ from puma_scouts.query import generate_queries
 from puma_scouts.scouts.base import MarketplaceScout
 from puma_scouts.scouts.catalog import _canonical, _jsonld_products, _clean, _price, _currency
 from puma_scouts.serper import SerperDiscovery
+from puma_scouts.runtime_cache import page_cache_seconds, runtime_cache
 from puma_scouts.validator import validate_offer
 
 
@@ -34,6 +36,9 @@ class WebShopsScout(MarketplaceScout):
             "Accept-Language": "uk-UA,uk;q=0.9,ru;q=0.7,en;q=0.5",
         }
         self.serper = SerperDiscovery(max_results=max_candidates_per_query, timeout=min(timeout, 10.0))
+        self.cache = runtime_cache()
+        self.page_cache_ttl = page_cache_seconds()
+        self.query_concurrency = max(1, min(int(os.getenv("PUMA_WEBSHOPS_QUERY_CONCURRENCY", "2")), 5))
 
     async def generate_queries(self, mission: ProductMission):
         article = mission.article.casefold().strip()
@@ -83,6 +88,23 @@ class WebShopsScout(MarketplaceScout):
         response = await client.get(url, headers=self.headers, follow_redirects=True)
         response.raise_for_status()
         return response.text
+
+    async def _get_product(self, client, url):
+        key = _canonical(url)
+        if self.cache and self.page_cache_ttl > 0:
+            try:
+                cached = self.cache.get(key, self.page_cache_ttl)
+                if cached is not None:
+                    return cached
+            except Exception:
+                pass
+        page = await self._get(client, url)
+        if self.cache and self.page_cache_ttl > 0:
+            try:
+                self.cache.put(key, page)
+            except Exception:
+                pass
+        return page
 
     async def _urls(self, client, query):
         found = []
@@ -168,7 +190,7 @@ class WebShopsScout(MarketplaceScout):
     async def _fetch_urls(self, client, mission, query, urls, method):
         async def one(url):
             try:
-                return self._offer(mission, url, await self._get(client, url), query, method)
+                return self._offer(mission, url, await self._get_product(client, url), query, method)
             except httpx.HTTPError:
                 return None
 
@@ -189,16 +211,27 @@ class WebShopsScout(MarketplaceScout):
         unique = {}
         errors = []
         seen = 0
+        query_sem = asyncio.Semaphore(self.query_concurrency)
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            for query in queries:
-                try:
-                    urls = await self._urls(client, query)
-                    seen += len(urls)
-                    offers = await self._fetch_urls(client, mission, query, urls, "free-web-search")
-                except Exception as exc:
-                    errors.append(str(exc))
+        async with httpx.AsyncClient(
+            timeout=self.timeout,
+            limits=httpx.Limits(max_connections=30, max_keepalive_connections=15),
+        ) as client:
+            async def native_batch(query):
+                async with query_sem:
+                    try:
+                        urls = await self._urls(client, query)
+                        offers = await self._fetch_urls(client, mission, query, urls, "free-web-search")
+                        return query, urls, offers, None
+                    except Exception as exc:
+                        return query, [], [], exc
+
+            batches = await asyncio.gather(*(native_batch(query) for query in queries))
+            for query, urls, offers, exc in batches:
+                if exc is not None:
+                    errors.append(f"native {query!r}: {exc}")
                     continue
+                seen += len(urls)
                 for offer in offers:
                     unique.setdefault(str(offer.url), offer)
 
@@ -206,14 +239,21 @@ class WebShopsScout(MarketplaceScout):
             passes = [item for item in validated if item.verdict == Verdict.PASS]
 
             if not passes and self.serper.enabled:
-                for query in queries[:2]:
-                    try:
-                        urls = await self._serper_urls(client, query)
-                        seen += len(urls)
-                        offers = await self._fetch_urls(client, mission, query, urls, "serper")
-                    except Exception as exc:
+                async def serper_batch(query):
+                    async with query_sem:
+                        try:
+                            urls = await self._serper_urls(client, query)
+                            offers = await self._fetch_urls(client, mission, query, urls, "serper")
+                            return query, urls, offers, None
+                        except Exception as exc:
+                            return query, [], [], exc
+
+                batches = await asyncio.gather(*(serper_batch(query) for query in queries[:2]))
+                for query, urls, offers, exc in batches:
+                    if exc is not None:
                         errors.append(f"serper {query!r}: {exc}")
                         continue
+                    seen += len(urls)
                     for offer in offers:
                         unique.setdefault(str(offer.url), offer)
 
