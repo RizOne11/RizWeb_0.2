@@ -15,6 +15,15 @@ def _num(value: Any) -> float | None:
         return None
 
 
+def _currency_code(value: Any) -> str:
+    text = str(value or "").strip().upper().replace(".", "")
+    aliases = {
+        "": "UAH", "UAH": "UAH", "ГРН": "UAH", "₴": "UAH", "HUA": "UAH",
+        "USD": "USD", "$": "USD", "US$": "USD", "EUR": "EUR", "€": "EUR",
+    }
+    return aliases.get(text, text or "UAH")
+
+
 def _independent_source_key(offer: dict[str, Any]) -> tuple[str, str]:
     source = str(offer.get("source") or "")
     if source == "web_shops":
@@ -71,7 +80,7 @@ def assess_price_market(
     priced: list[dict[str, Any]] = []
     for offer in offers:
         price = _num(offer.get("price"))
-        currency = str(offer.get("currency") or "UAH").upper()
+        currency = _currency_code(offer.get("currency"))
         if price is None or currency != "UAH":
             continue
         offer["price_status"] = "OK"
