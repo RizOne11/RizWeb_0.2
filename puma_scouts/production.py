@@ -6,6 +6,7 @@ from typing import Any,Callable
 from openpyxl import Workbook,load_workbook
 from .classic_report import save_classic
 from .models import IdentityConfidence,ProductMission,Verdict,ScanHealth,ScanReport
+from .price_score import assess_price_market
 
 def _text(v:Any)->str:return "" if v is None else str(v).strip()
 def _currency_code(v:Any)->str:
@@ -210,26 +211,33 @@ def product_report(missions:list[ProductMission],rows:list[dict[str,Any]],diagno
     for x in rows:by_article.setdefault(x["article"],[]).append(x)
     diagnostics_by_article=diagnostics_by_article or {};report=[]
     for m in missions:
-        offers=by_article.get(m.article,[]);priced=[x["price"] for x in offers if x.get("price") is not None and _is_uah_currency(x.get("currency","UAH"))];conf=Counter(x.get("identity_confidence","LEGACY_PASS") for x in offers)
+        offers=by_article.get(m.article,[])
+        conf=Counter(x.get("identity_confidence","LEGACY_PASS") for x in offers)
+        market=assess_price_market(offers,m.source_data.get("own_price",""))
         report.append({
             "article":m.article,"name":m.source_data.get("name",""),"brand":m.source_data.get("brand",""),"model":m.source_data.get("model",""),
             "category":m.source_data.get("category",""),"supplier":m.source_data.get("supplier",""),"old_price":m.source_data.get("old_price",""),
             "discount":m.source_data.get("discount",""),"own_price":m.source_data.get("own_price",""),"status":"FOUND" if offers else "NOT_FOUND",
-            "marketplaces":_market_summary(offers),"offers":len(offers),"sources":len({x["source"] for x in offers}),
-            "min_price":min(priced) if priced else None,"median_price":statistics.median(priced) if priced else None,
-            "avg_price":round(sum(priced)/len(priced),2) if priced else None,"max_price":max(priced) if priced else None,
-            "confirmed":conf.get("CONFIRMED",0),"probable":conf.get("PROBABLE",0),"offer_rows":offers,
-            "diagnostics":diagnostics_by_article.get(m.article,{})
+            "marketplaces":_market_summary(offers),"offers":len(offers),"sources":market["market_sources"],
+            "min_price":market["market_min"],"median_price":market["market_median"],
+            "avg_price":market["market_avg"],"max_price":market["market_max"],
+            "confirmed":conf.get("CONFIRMED",0),"probable":conf.get("PROBABLE",0),
+            "price_score":market["price_score"],"price_verdict":market["price_verdict"],
+            "price_verdict_reason":market["price_verdict_reason"],"market_confidence":market["market_confidence"],
+            "suspicious_price_count":market["suspicious_price_count"],"reserve_uah":market["reserve_uah"],
+            "reserve_pct":market["reserve_pct"],"delta_median_pct":market["delta_median_pct"],
+            "same_price_count":market["same_price_count"],"market_representatives":market["market_representatives"],
+            "offer_rows":offers,"diagnostics":diagnostics_by_article.get(m.article,{})
         })
     return report
 
 def save(rows:list[dict[str,Any]],output:str,missions:list[ProductMission]|None=None,diagnostics_by_article:dict[str,dict[str,Any]]|None=None)->None:
     missions=missions or [];products=product_report(missions,rows,diagnostics_by_article) if missions else [];wb=Workbook();overview=wb.active;overview.title="Результат"
-    overview.append(["Артикул","Назва","Бренд","Модель","Вхідна ціна","Статус","Маркетплейс → ціна","Мін. ринку","Медіана","Середня","Макс. ринку","Карток","Джерел","CONFIRMED","PROBABLE"])
-    for p in products:overview.append([p[k] for k in ("article","name","brand","model","own_price","status","marketplaces","min_price","median_price","avg_price","max_price","offers","sources","confirmed","probable")])
+    overview.append(["Артикул","Назва","Бренд","Модель","Вхідна ціна","Статус","Вердикт ціни","Причина","Price Score","Достовірність","Маркетплейс → ціна","Мін. ринку","Медіана","Середня","Макс. ринку","Карток","Джерел ринку","Підозрілих цін","Запас, грн","Запас, %","CONFIRMED","PROBABLE"])
+    for p in products:overview.append([p[k] for k in ("article","name","brand","model","own_price","status","price_verdict","price_verdict_reason","price_score","market_confidence","marketplaces","min_price","median_price","avg_price","max_price","offers","sources","suspicious_price_count","reserve_uah","reserve_pct","confirmed","probable")])
     overview.freeze_panes="A2";overview.auto_filter.ref=overview.dimensions
-    ws=wb.create_sheet("Пропозиції");keys=("article","name","brand","model","own_price","source","price","currency","availability","found_title","url","match","identity_confidence","domain","health")
-    ws.append(["Артикул","Назва","Бренд","Модель","Вхідна ціна","Джерело","Ціна","Валюта","Наявність","Знайдена назва","URL","Match","Identity Confidence","Домен","Health"]);defaults={"identity_confidence":"LEGACY_PASS","domain":"","health":"","own_price":""}
+    ws=wb.create_sheet("Пропозиції");keys=("article","name","brand","model","own_price","source","price","currency","price_status","price_reason","availability","found_title","url","match","identity_confidence","domain","health")
+    ws.append(["Артикул","Назва","Бренд","Модель","Вхідна ціна","Джерело","Ціна","Валюта","Статус ціни","Причина ціни","Наявність","Знайдена назва","URL","Match","Identity Confidence","Домен","Health"]);defaults={"identity_confidence":"LEGACY_PASS","domain":"","health":"","own_price":"","price_status":"","price_reason":""}
     for x in rows:ws.append([x.get(k,defaults.get(k,"")) for k in keys])
     ws.freeze_panes="A2";ws.auto_filter.ref=ws.dimensions
     summary=wb.create_sheet("Ціна → картки");summary.append(["Артикул","Назва","Джерело","Ціна","Карток"]);groups=Counter((x["article"],x["name"],x["source"],x["price"]) for x in rows if x.get("price") is not None and _is_uah_currency(x.get("currency","UAH")))
