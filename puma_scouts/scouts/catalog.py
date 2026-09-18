@@ -128,9 +128,10 @@ class CatalogScout(MarketplaceScout):
         return r.text
 
     async def _get_product(self, client: httpx.AsyncClient, url: str) -> str:
+        key = _canonical(url)
         if self.cache and self.page_cache_ttl > 0:
             try:
-                cached = self.cache.get(_canonical(url), self.page_cache_ttl)
+                cached = await asyncio.to_thread(self.cache.get, key, self.page_cache_ttl)
                 if cached is not None:
                     return cached
             except Exception:
@@ -138,7 +139,7 @@ class CatalogScout(MarketplaceScout):
         page = await self._get(client, url)
         if self.cache and self.page_cache_ttl > 0:
             try:
-                self.cache.put(_canonical(url), page)
+                await asyncio.to_thread(self.cache.put, key, page)
             except Exception:
                 pass
         return page
