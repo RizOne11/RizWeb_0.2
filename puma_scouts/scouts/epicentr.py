@@ -261,6 +261,7 @@ class EpicentrScout(MarketplaceScout):
             "refresh_only": self.refresh_only(),
             "identity_urls_attempted": 0,
             "repair_required": False,
+            "discovery_gap": False,
         }
 
         client = await self.http_client()
@@ -301,7 +302,10 @@ class EpicentrScout(MarketplaceScout):
             unique.clear()
 
         if self.refresh_only():
-            metrics["repair_required"] = True
+            if known_urls:
+                metrics["repair_required"] = True
+            else:
+                metrics["discovery_gap"] = True
             return ScanReport(
                 article=mission.article,
                 marketplace=self.marketplace,
