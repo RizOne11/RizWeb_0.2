@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio,csv,json,os,re,statistics,xml.etree.ElementTree as ET
+import asyncio,csv,json,os,re,statistics,time,xml.etree.ElementTree as ET
 from collections import Counter
 from pathlib import Path
 from typing import Any,Callable
@@ -93,7 +93,7 @@ SOURCE_HARD_TIMEOUT=max(
     SOURCE_WALL_TIMEOUT,
     float(os.getenv("PUMA_SOURCE_HARD_TIMEOUT",str(SOURCE_WALL_TIMEOUT*2))),
 )
-PRODUCT_CONCURRENCY=max(1,min(int(os.getenv("PUMA_PRODUCT_CONCURRENCY","1")),4))
+PRODUCT_CONCURRENCY=max(1,min(int(os.getenv("PUMA_PRODUCT_CONCURRENCY","4")),4))
 
 async def _scan_source(
     scout,
@@ -101,40 +101,38 @@ async def _scan_source(
     wall_timeout:float=SOURCE_WALL_TIMEOUT,
     hard_timeout:float|None=None,
 ):
-    """Treat the historical wall timeout as a soft quality deadline.
-
-    The old implementation cancelled the scout at 70s and replaced any partial
-    work with an empty ACCESS_LIMITED report. A slow but useful source may now
-    finish inside a bounded recovery window; only the hard deadline cancels it.
-    """
+    """Run one source with bounded recovery and report real wall-clock cost."""
+    started=time.perf_counter()
     soft=max(0.01,float(wall_timeout))
     hard=max(soft,float(SOURCE_HARD_TIMEOUT if hard_timeout is None else hard_timeout))
     task=asyncio.create_task(scout.scan(mission))
     try:
         try:
             report=await asyncio.wait_for(asyncio.shield(task),timeout=soft)
-            return scout,report
+            return scout,report,time.perf_counter()-started
         except asyncio.TimeoutError:
             remaining=max(0.01,hard-soft)
             try:
                 report=await asyncio.wait_for(asyncio.shield(task),timeout=remaining)
                 report.errors.append(f"soft_timeout_{soft:g}s_recovered")
-                return scout,report
+                return scout,report,time.perf_counter()-started
             except asyncio.TimeoutError:
                 task.cancel()
                 await asyncio.gather(task,return_exceptions=True)
-                return scout,ScanReport(
+                report=ScanReport(
                     article=mission.article,marketplace=scout.marketplace,health=ScanHealth.ACCESS_LIMITED,
                     errors=[f"hard_timeout_{hard:g}s"]
                 )
+                return scout,report,time.perf_counter()-started
     except Exception as exc:
         if not task.done():
             task.cancel()
             await asyncio.gather(task,return_exceptions=True)
-        return scout,ScanReport(
+        report=ScanReport(
             article=mission.article,marketplace=scout.marketplace,health=ScanHealth.SCOUT_ERROR,
             errors=[f"{type(exc).__name__}: {exc}"]
         )
+        return scout,report,time.perf_counter()-started
 
 def _title_signature(title:str)->str:
     t=title.casefold();t=re.sub(r"\([^)]*\)$","",t);t=re.sub(r"\b(?:монітор|монитор)\b"," ",t);return re.sub(r"[^a-zа-яіїєґ0-9]+"," ",t).strip()
@@ -147,9 +145,10 @@ def _reason_summary(report)->str:
             if reason: reasons[reason]+=1
     return " | ".join(f"{reason} ×{count}" for reason,count in reasons.most_common(5))
 
-async def scan_detailed(mission:ProductMission,selected:list[str]|None=None)->tuple[list[dict[str,Any]],dict[str,Any]]:
-    rows=[];diagnostics={};results=await asyncio.gather(*[_scan_source(s,mission) for s in scouts(selected)])
-    for scout,report in results:
+async def scan_detailed(mission:ProductMission,selected:list[str]|None=None,scout_pool:list[Any]|None=None)->tuple[list[dict[str,Any]],dict[str,Any]]:
+    active_scouts=scout_pool if scout_pool is not None else scouts(selected)
+    rows=[];diagnostics={};results=await asyncio.gather(*[_scan_source(s,mission) for s in active_scouts])
+    for scout,report,elapsed in results:
         source=scout.marketplace.value
         accepted=0
         verdicts=Counter()
@@ -182,7 +181,7 @@ async def scan_detailed(mission:ProductMission,selected:list[str]|None=None)->tu
             "candidates":report.candidates_collected,"seen":report.candidates_seen,"accepted":accepted,
             "pass":verdicts.get("PASS",0),"conflict":verdicts.get("CONFLICT",0),"reject":verdicts.get("REJECT",0),
             "ambiguous":identities.get("AMBIGUOUS",0),"identity_conflict":identities.get("CONFLICT",0),
-            "reasons":reason_summary,"errors":list(report.errors or []),
+            "reasons":reason_summary,"errors":list(report.errors or []),"elapsed_seconds":round(elapsed,3),
         }
     dedup={}
     for x in rows:
@@ -235,12 +234,12 @@ def save(rows:list[dict[str,Any]],output:str,missions:list[ProductMission]|None=
     for key,count in sorted(groups.items(),key=lambda z:(z[0][0],z[0][2],z[0][3])):summary.append([*key,count])
     summary.freeze_panes="A2";summary.auto_filter.ref=summary.dimensions
     diag=wb.create_sheet("Discovery діагностика")
-    diag.append(["Артикул","Товар","Джерело","Health","Запитів","Сторінок","Кандидатів","Seen","Прийнято","PASS","CONFLICT","REJECT","AMBIGUOUS","ID CONFLICT","Причини","Помилки"])
+    diag.append(["Артикул","Товар","Джерело","Health","Секунд","Запитів","Сторінок","Кандидатів","Seen","Прийнято","PASS","CONFLICT","REJECT","AMBIGUOUS","ID CONFLICT","Причини","Помилки"])
     name_by_article={m.article:m.source_data.get("name","") for m in missions}
     for article,sources in (diagnostics_by_article or {}).items():
         for src,d in sources.items():
             diag.append([
-                article,name_by_article.get(article,""),src,d.get("health",""),d.get("queries",0),d.get("pages",0),
+                article,name_by_article.get(article,""),src,d.get("health",""),d.get("elapsed_seconds",0),d.get("queries",0),d.get("pages",0),
                 d.get("candidates",0),d.get("seen",0),d.get("accepted",0),d.get("pass",0),d.get("conflict",0),
                 d.get("reject",0),d.get("ambiguous",0),d.get("identity_conflict",0),d.get("reasons",""),
                 " | ".join(d.get("errors") or [])
@@ -286,6 +285,7 @@ def _save_checkpoint(path:str|None,token:str|None,missions:list[ProductMission],
 async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[str]|None=None,progress_cb:Callable|None=None,classic_output_path:str|None=None,supplier:str="",checkpoint_path:str|None=None,checkpoint_token:str|None=None)->dict[str,Any]:
     missions=read_missions(input_path,limit)
     completed_state=_load_checkpoint(checkpoint_path,checkpoint_token,missions)
+    scout_pool=scouts(selected)
     semaphore=asyncio.Semaphore(PRODUCT_CONCURRENCY)
     lock=asyncio.Lock()
 
@@ -294,7 +294,7 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
             async with lock:
                 already_done=len(completed_state)
             if progress_cb:progress_cb(already_done,len(missions),m.source_data.get("name",m.article),f"Шукаємо реальні пропозиції… (паралельність {PRODUCT_CONCURRENCY})")
-            found,diag=await scan_detailed(m,selected)
+            found,diag=await scan_detailed(m,selected,scout_pool=scout_pool)
             async with lock:
                 completed_state[index]={"article":m.article,"found":found,"diagnostics":diag}
                 _save_checkpoint(checkpoint_path,checkpoint_token,missions,completed_state)
@@ -322,7 +322,28 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
     if progress_cb:progress_cb(len(missions),len(missions),"Готово","Формуємо звіти…")
     found=sum(1 for p in products if p["status"]=="FOUND")
     confidence=Counter(x.get("identity_confidence","LEGACY_PASS") for x in rows)
+    timing_samples={}
+    for source_map in diagnostics_by_article.values():
+        for src,d in source_map.items():
+            timing_samples.setdefault(src,[]).append(float(d.get("elapsed_seconds") or 0))
+    source_timing={
+        src:{
+            "samples":len(vals),
+            "avg_seconds":round(sum(vals)/max(1,len(vals)),3),
+            "max_seconds":round(max(vals),3) if vals else 0,
+        }
+        for src,vals in timing_samples.items()
+    }
+    serper_api_requests=sum(int(getattr(getattr(s,"serper",None),"api_requests",0) or 0) for s in scout_pool)
+    serper_cache_hits=sum(int(getattr(getattr(s,"serper",None),"cache_hits",0) or 0) for s in scout_pool)
     web_products=[{k:v for k,v in p.items() if k!="offer_rows"}|{"offers_detail":p["offer_rows"]} for p in products]
-    return {"products":len(missions),"offers":len(rows),"found_products":found,"found_pct":round(found/max(1,len(missions))*100,1),"sources":len({x["source"] for x in rows}),"confirmed":confidence.get("CONFIRMED",0),"probable":confidence.get("PROBABLE",0),"product_results":web_products}
+    return {
+        "products":len(missions),"offers":len(rows),"found_products":found,
+        "found_pct":round(found/max(1,len(missions))*100,1),"sources":len({x["source"] for x in rows}),
+        "confirmed":confidence.get("CONFIRMED",0),"probable":confidence.get("PROBABLE",0),
+        "product_concurrency":PRODUCT_CONCURRENCY,"source_timing":source_timing,
+        "serper_api_requests":serper_api_requests,"serper_cache_hits":serper_cache_hits,
+        "product_results":web_products,
+    }
 
 def run_sync(input_path:str,output_path:str,**kwargs):return asyncio.run(run(input_path,output_path,**kwargs))
