@@ -45,4 +45,4 @@ def serper_cache_seconds() -> int:
 
 
 def page_cache_seconds() -> int:
-    return max(0, int(os.getenv("PUMA_PAGE_CACHE_SECONDS", "300")))
+    return max(0, int(os.getenv("PUMA_PAGE_CACHE_SECONDS", "0")))
