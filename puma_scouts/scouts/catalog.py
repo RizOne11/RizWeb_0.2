@@ -15,6 +15,7 @@ from puma_scouts.models import Marketplace, Offer, ProductMission, ScanHealth, S
 from puma_scouts.query import generate_queries
 from puma_scouts.scouts.base import MarketplaceScout
 from puma_scouts.serper import SerperDiscovery
+from puma_scouts.runtime_cache import page_cache_seconds, runtime_cache
 from puma_scouts.validator import validate_offer
 
 
@@ -92,6 +93,8 @@ class CatalogScout(MarketplaceScout):
             "Accept-Language": "uk-UA,uk;q=0.9,ru;q=0.7,en;q=0.5",
         }
         self.serper = SerperDiscovery(max_results=max_candidates_per_query, timeout=min(timeout, 10.0))
+        self.cache = runtime_cache()
+        self.page_cache_ttl = page_cache_seconds()
 
     async def generate_queries(self, mission: ProductMission) -> list[str]:
         article = mission.article.casefold().strip()
@@ -123,6 +126,22 @@ class CatalogScout(MarketplaceScout):
         r = await client.get(url, headers=self.headers, follow_redirects=True)
         r.raise_for_status()
         return r.text
+
+    async def _get_product(self, client: httpx.AsyncClient, url: str) -> str:
+        if self.cache and self.page_cache_ttl > 0:
+            try:
+                cached = self.cache.get(_canonical(url), self.page_cache_ttl)
+                if cached is not None:
+                    return cached
+            except Exception:
+                pass
+        page = await self._get(client, url)
+        if self.cache and self.page_cache_ttl > 0:
+            try:
+                self.cache.put(_canonical(url), page)
+            except Exception:
+                pass
+        return page
 
     def _extract_candidate_links(self, page: str, base_url: str) -> list[str]:
         found = {}
@@ -243,7 +262,7 @@ class CatalogScout(MarketplaceScout):
     async def _fetch_offers(self, client: httpx.AsyncClient, mission: ProductMission, query: str, urls: list[str], method: str) -> list[Offer]:
         async def fetch_one(url: str):
             try:
-                return self._offer(mission, url, await self._get(client, url), query, method)
+                return self._offer(mission, url, await self._get_product(client, url), query, method)
             except Exception:
                 return None
         fetched = await asyncio.gather(*(fetch_one(url) for url in urls))
