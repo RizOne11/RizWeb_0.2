@@ -1,0 +1,17 @@
+name: PUMA Benchmark 100 Category Rerun
+
+on:
+  push:
+    branches: [puma-benchmark-category-rerun]
+    paths:
+      - '.github/workflows/puma-benchmark-category-rerun.yml'
+
+jobs:
+  rerun:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Start exact benchmark-100 rerun
+        run: |
+          set -euo pipefail
+          curl -fsS -X POST 'https://rizweb-0-2.onrender.com/api/jobs/8fd23d835495/rerun?limit=100'
