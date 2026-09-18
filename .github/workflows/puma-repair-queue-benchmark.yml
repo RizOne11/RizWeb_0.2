@@ -1,0 +1,279 @@
+name: PUMA Repair Queue 100 Benchmark
+
+on:
+  push:
+    branches: [puma-performance-recovery]
+    paths:
+      - '.github/workflows/puma-repair-queue-benchmark.yml'
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      PYTHONPATH: .
+      PUMA_SOURCE_WALL_TIMEOUT: "70"
+      PUMA_SOURCE_HARD_TIMEOUT: "140"
+      PUMA_RUNTIME_CACHE_PATH: "/tmp/puma-repair-benchmark-cache.sqlite"
+      PUMA_IDENTITY_CACHE_SECONDS: "2592000"
+      PUMA_REFRESH_URL_LIMIT: "1"
+      PUMA_REFRESH_WEB_URL_LIMIT: "3"
+      SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: puma-performance-recovery
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install -r requirements.txt
+
+      - name: Verify benchmark configuration
+        run: |
+          if [ -z "${SERPER_API_KEY:-}" ]; then
+            echo "SERPER_REQUIRED_BUT_NOT_CONFIGURED"
+            exit 42
+          fi
+          rm -f /tmp/puma-repair-benchmark-cache.sqlite /tmp/puma-repair-benchmark-cache.sqlite-wal /tmp/puma-repair-benchmark-cache.sqlite-shm
+          echo "SERPER_CONFIGURED=1"
+          echo "REPAIR_BENCHMARK_CACHE_FRESH=1"
+
+      - name: Rebuild identical 100-product catalog
+        run: |
+          python - <<'PY'
+          import json, urllib.request, xml.etree.ElementTree as ET
+
+          url = "https://rizweb-0-2.onrender.com/api/jobs/8fd23d835495"
+          with urllib.request.urlopen(url, timeout=60) as r:
+              payload = json.load(r)
+
+          products = (payload.get("summary") or {}).get("product_results") or []
+          if len(products) < 100:
+              raise SystemExit(f"BASELINE_PRODUCTS_MISSING: {len(products)}")
+
+          root = ET.Element("yml_catalog")
+          shop = ET.SubElement(root, "shop")
+          offers = ET.SubElement(shop, "offers")
+          for i, p in enumerate(products[:100], 1):
+              offer = ET.SubElement(offers, "offer", id=str(p.get("article") or f"ROW-{i}"))
+              fields = {
+                  "name": p.get("name"),
+                  "vendor": p.get("brand"),
+                  "model": p.get("model"),
+                  "price": p.get("own_price"),
+                  "category": p.get("category"),
+                  "supplier": p.get("supplier"),
+                  "old_price": p.get("old_price"),
+                  "discount": p.get("discount"),
+              }
+              for key, value in fields.items():
+                  if value not in (None, ""):
+                      ET.SubElement(offer, key).text = str(value)
+
+          ET.ElementTree(root).write("/tmp/puma100.yml", encoding="utf-8", xml_declaration=True)
+          print("PUMA_REPAIR_INPUT_PRODUCTS=100", flush=True)
+          PY
+
+      - name: Discovery, fast refresh, classify queues, repair only lost identities
+        run: |
+          python - <<'PY'
+          import json, os, time, xml.etree.ElementTree as ET
+          from pathlib import Path
+          from collections import defaultdict
+          from puma_scouts.production import run_sync
+
+          selected=["prom","epicentr","hotline","web_shops"]
+
+          def write_products(path, products):
+              root=ET.Element("yml_catalog")
+              shop=ET.SubElement(root,"shop")
+              offers=ET.SubElement(shop,"offers")
+              for i,p in enumerate(products,1):
+                  offer=ET.SubElement(offers,"offer",id=str(p.get("article") or f"ROW-{i}"))
+                  fields={
+                      "name":p.get("name"),"vendor":p.get("brand"),"model":p.get("model"),
+                      "price":p.get("own_price"),"category":p.get("category"),
+                      "supplier":p.get("supplier"),"old_price":p.get("old_price"),
+                      "discount":p.get("discount"),
+                  }
+                  for key,value in fields.items():
+                      if value not in (None,""):
+                          ET.SubElement(offer,key).text=str(value)
+              ET.ElementTree(root).write(path,encoding="utf-8",xml_declaration=True)
+
+          def run_pass(label, input_path, sources, refresh_only=False):
+              if refresh_only:
+                  os.environ["PUMA_REFRESH_ONLY"]="1"
+              else:
+                  os.environ.pop("PUMA_REFRESH_ONLY",None)
+              started=time.monotonic()
+              summary=run_sync(
+                  input_path,
+                  f"/tmp/PUMA_repair_{label.lower()}_market_report.xlsx",
+                  selected=sources,
+                  classic_output_path=f"/tmp/PUMA_repair_{label.lower()}_classic_report.xlsx",
+                  supplier="repair-queue-100",
+              )
+              summary["wall_seconds"]=round(time.monotonic()-started,2)
+              Path(f"/tmp/puma-repair-{label.lower()}-summary.json").write_text(
+                  json.dumps(summary,ensure_ascii=False,indent=2),encoding="utf-8"
+              )
+              return summary
+
+          # Stage 1: establish current identities with normal discovery.
+          os.environ["PUMA_SERPER_CACHE_SECONDS"]="259200"
+          discovery=run_pass("DISCOVERY","/tmp/puma100.yml",selected,False)
+          print(f"PUMA_REPAIR_DISCOVERY_SECONDS={discovery['wall_seconds']}",flush=True)
+          print(f"PUMA_REPAIR_DISCOVERY_FOUND={discovery.get('found_products')}/100",flush=True)
+          print("PUMA_REPAIR_DISCOVERY_COVERAGE="+json.dumps(discovery.get("coverage_by_source",{}),ensure_ascii=False),flush=True)
+
+          # Stage 2: strict direct-only refresh.
+          refresh=run_pass("REFRESH","/tmp/puma100.yml",selected,True)
+          print(f"PUMA_REPAIR_REFRESH_SECONDS={refresh['wall_seconds']}",flush=True)
+          print(f"PUMA_REPAIR_REFRESH_FOUND={refresh.get('found_products')}/100",flush=True)
+          print("PUMA_REPAIR_REFRESH_COVERAGE="+json.dumps(refresh.get("coverage_by_source",{}),ensure_ascii=False),flush=True)
+
+          repair_products=defaultdict(list)
+          discovery_gaps=defaultdict(list)
+          for p in refresh.get("product_results") or []:
+              diagnostics=p.get("diagnostics") or {}
+              for source in selected:
+                  metrics=((diagnostics.get(source) or {}).get("metrics") or {})
+                  if metrics.get("repair_required"):
+                      repair_products[source].append(p)
+                  elif metrics.get("discovery_gap"):
+                      discovery_gaps[source].append(p)
+
+          queue_counts={s:len(repair_products[s]) for s in selected}
+          gap_counts={s:len(discovery_gaps[s]) for s in selected}
+          print("PUMA_REPAIR_QUEUE_COUNTS="+json.dumps(queue_counts,ensure_ascii=False),flush=True)
+          print("PUMA_DISCOVERY_GAP_COUNTS="+json.dumps(gap_counts,ensure_ascii=False),flush=True)
+
+          # Stage 3: only previously-known identities that actually failed enter REPAIR.
+          # Disable Serper search cache here so paid-request counts reflect real repair cost.
+          os.environ.pop("PUMA_REFRESH_ONLY",None)
+          os.environ["PUMA_SERPER_CACHE_SECONDS"]="0"
+
+          repair_results={}
+          recovered_pairs=0
+          repair_seconds=0.0
+          repair_serper_requests=0
+          backup_rescues=0
+          free_rescues=0
+          serper_rescues=0
+
+          for source in selected:
+              queue=repair_products[source]
+              if not queue:
+                  repair_results[source]={
+                      "queued":0,"recovered":0,"seconds":0.0,"serper_requests":0,
+                      "identity_backup_rescues":0,"free_rescues":0,"serper_rescues":0,
+                  }
+                  continue
+              input_path=f"/tmp/puma-repair-{source}.yml"
+              write_products(input_path,queue)
+              started=time.monotonic()
+              summary=run_sync(
+                  input_path,
+                  f"/tmp/PUMA_repair_only_{source}_market_report.xlsx",
+                  selected=[source],
+                  classic_output_path=f"/tmp/PUMA_repair_only_{source}_classic_report.xlsx",
+                  supplier=f"repair-{source}",
+              )
+              elapsed=round(time.monotonic()-started,2)
+              summary["wall_seconds"]=elapsed
+              Path(f"/tmp/puma-repair-only-{source}-summary.json").write_text(
+                  json.dumps(summary,ensure_ascii=False,indent=2),encoding="utf-8"
+              )
+              bucket=(summary.get("source_discovery") or {}).get(source) or {}
+              recovered=int(summary.get("found_products") or 0)
+              identity_hits=int(bucket.get("identity_refresh_hits") or 0)
+              serper_hits=int(bucket.get("serper_rescued_products") or 0)
+              free_hits=max(0,recovered-identity_hits-serper_hits)
+              api=int(summary.get("serper_api_requests") or 0)
+              repair_results[source]={
+                  "queued":len(queue),"recovered":recovered,"seconds":elapsed,
+                  "serper_requests":api,"identity_backup_rescues":identity_hits,
+                  "free_rescues":free_hits,"serper_rescues":serper_hits,
+              }
+              recovered_pairs+=recovered
+              repair_seconds+=elapsed
+              repair_serper_requests+=api
+              backup_rescues+=identity_hits
+              free_rescues+=free_hits
+              serper_rescues+=serper_hits
+
+          # Merge direct refresh + recovered repair pairs into final source coverage.
+          source_sets={}
+          for p in refresh.get("product_results") or []:
+              source_sets[p["article"]]={
+                  row.get("source")
+                  for row in (p.get("offers_detail") or [])
+                  if row.get("price") is not None and row.get("source")
+              }
+
+          for source in selected:
+              path=Path(f"/tmp/puma-repair-only-{source}-summary.json")
+              if not path.exists():
+                  continue
+              summary=json.loads(path.read_text(encoding="utf-8"))
+              for p in summary.get("product_results") or []:
+                  if p.get("status")=="FOUND":
+                      source_sets.setdefault(p["article"],set()).add(source)
+
+          final_coverage={
+              source:{
+                  "products_with_price":sum(1 for values in source_sets.values() if source in values),
+                  "pct":round(sum(1 for values in source_sets.values() if source in values)/100*100,1),
+              }
+              for source in selected
+          }
+          final_found=sum(1 for values in source_sets.values() if values)
+          final_all4=sum(1 for values in source_sets.values() if all(source in values for source in selected))
+          final_depth={str(n):sum(1 for values in source_sets.values() if len(values)==n) for n in range(5)}
+
+          final={
+              "repair_queue_counts":queue_counts,
+              "discovery_gap_counts":gap_counts,
+              "repair_results":repair_results,
+              "repair_recovered_pairs":recovered_pairs,
+              "repair_total_seconds_sequential":round(repair_seconds,2),
+              "repair_serper_requests":repair_serper_requests,
+              "identity_backup_rescues":backup_rescues,
+              "free_rescues":free_rescues,
+              "serper_rescues":serper_rescues,
+              "final_found_products":final_found,
+              "final_coverage_by_source":final_coverage,
+              "final_all_sources_products":final_all4,
+              "final_source_count_distribution":final_depth,
+          }
+          Path("/tmp/puma-repair-final-summary.json").write_text(
+              json.dumps(final,ensure_ascii=False,indent=2),encoding="utf-8"
+          )
+
+          print("PUMA_REPAIR_RESULTS="+json.dumps(repair_results,ensure_ascii=False),flush=True)
+          print(f"PUMA_REPAIR_RECOVERED_PAIRS={recovered_pairs}",flush=True)
+          print(f"PUMA_REPAIR_TOTAL_SECONDS_SEQUENTIAL={round(repair_seconds,2)}",flush=True)
+          print(f"PUMA_REPAIR_SERPER_REQUESTS={repair_serper_requests}",flush=True)
+          print(f"PUMA_REPAIR_IDENTITY_BACKUP_RESCUES={backup_rescues}",flush=True)
+          print(f"PUMA_REPAIR_FREE_RESCUES={free_rescues}",flush=True)
+          print(f"PUMA_REPAIR_SERPER_RESCUES={serper_rescues}",flush=True)
+          print(f"PUMA_REPAIR_FINAL_FOUND={final_found}/100",flush=True)
+          print("PUMA_REPAIR_FINAL_COVERAGE="+json.dumps(final_coverage,ensure_ascii=False),flush=True)
+          print(f"PUMA_REPAIR_FINAL_ALL_SOURCES={final_all4}/100",flush=True)
+          print("PUMA_REPAIR_FINAL_SOURCE_COUNTS="+json.dumps(final_depth,ensure_ascii=False),flush=True)
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: puma-repair-queue-100
+          path: |
+            /tmp/puma-repair-*-summary.json
+            /tmp/PUMA_repair_*_market_report.xlsx
+            /tmp/PUMA_repair_*_classic_report.xlsx
+          if-no-files-found: warn
