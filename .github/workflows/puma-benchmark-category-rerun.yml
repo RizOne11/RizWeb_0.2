@@ -11,8 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: Show restarted benchmark status
+      - name: Show benchmark status
         run: |
           set -euo pipefail
           curl -fsS 'https://rizweb-0-2.onrender.com/api/jobs/4900bc726896'
-# status-after-restart
+# status-probe-4900bc726896-2
