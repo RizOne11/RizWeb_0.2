@@ -31,6 +31,14 @@ jobs:
 
       - run: pip install -r requirements.txt
 
+      - name: Verify Serper benchmark configuration
+        run: |
+          if [ -z "${SERPER_API_KEY:-}" ]; then
+            echo "SERPER_REQUIRED_BUT_NOT_CONFIGURED"
+            exit 42
+          fi
+          echo "SERPER_CONFIGURED=1"
+
       - name: Rebuild identical 100-product catalog from baseline job
         run: |
           python - <<'PY'
@@ -100,6 +108,8 @@ jobs:
           print("PUMA100_AB_OFFERS="+str(summary.get("offers")), flush=True)
           print("PUMA100_AB_CONFIRMED="+str(summary.get("confirmed")), flush=True)
           print("PUMA100_AB_PROBABLE="+str(summary.get("probable")), flush=True)
+          print("PUMA100_AB_SERPER_CONFIGURED="+str(summary.get("serper_configured","n/a")), flush=True)
+          print("PUMA100_AB_SERPER_ENABLED="+str(summary.get("serper_enabled","n/a")), flush=True)
           print("PUMA100_AB_SERPER_REQUESTS="+str(summary.get("serper_api_requests","n/a")), flush=True)
           print("PUMA100_AB_SERPER_CACHE_HITS="+str(summary.get("serper_cache_hits","n/a")), flush=True)
           print("PUMA100_AB_PRICE_VERDICTS="+json.dumps(summary.get("price_verdicts",{}), ensure_ascii=False), flush=True)
