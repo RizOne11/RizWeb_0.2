@@ -1,7 +1,7 @@
 name: PUMA v1.3 Exact Five Smoke
 on:
   push:
-    branches: [main, puma-v1.3-integration]
+    branches: [main, puma-v1.3-integration, puma-performance-recovery]
     paths:
       - .github/workflows/puma-v13-test5.yml
       - puma_scouts/validator.py
