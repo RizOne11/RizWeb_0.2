@@ -9,6 +9,8 @@ GENERIC = "generic"
 COMPUTER_VARIANT = "computer_variant"
 CONSUMABLE_MULTIPACK = "consumable_multipack"
 CABLE_LENGTH_VARIANT = "cable_length_variant"
+ENERGY_POWER = "energy_power"
+WEARABLE_MODEL_VARIANT = "wearable_model_variant"
 
 
 @dataclass(frozen=True)
@@ -190,6 +192,125 @@ def _cable_assessment(source: str, candidate: str) -> CategoryAssessment:
     return CategoryAssessment(CABLE_LENGTH_VARIANT)
 
 
+
+def _power_w(text: str) -> set[int]:
+    raw = _norm(text)
+    out: set[int] = set()
+    for value, unit in re.findall(r"(?<!\\d)(\\d+(?:[.,]\\d+)?)\\s*(квт|kw|вт|w)\\b", raw, re.I):
+        number = float(value.replace(",", "."))
+        watts = int(round(number * 1000)) if unit.casefold() in {"квт", "kw"} else int(round(number))
+        if 50 <= watts <= 100000:
+            out.add(watts)
+    return out
+
+
+def _voltage_v(text: str) -> set[float]:
+    raw = _norm(text)
+    out: set[float] = set()
+    for value in re.findall(r"(?<!\\d)(\\d{1,3}(?:[.,]\\d+)?)\\s*(?:v|в)\\b", raw, re.I):
+        number = float(value.replace(",", "."))
+        if 1 <= number <= 1000:
+            out.add(number)
+    return out
+
+
+def _energy_editions(text: str) -> set[str]:
+    raw = _norm(text)
+    out: set[str] = set()
+    for token in ("eco", "pro"):
+        if re.search(rf"\\b{token}\\b", raw, re.I):
+            out.add(token)
+    return out
+
+
+def _energy_bundle(text: str) -> bool:
+    raw = _norm(text)
+    markers = (
+        "в сборе", "у зборі", "с аккумулятор", "з акумулятор",
+        "с батаре", "з батаре", "автономная система", "автономна система",
+        "system with battery", "bundle",
+    )
+    return any(marker in raw for marker in markers)
+
+
+def _energy_assessment(source: str, candidate: str) -> CategoryAssessment:
+    conflicts: list[str] = []
+    missing: list[str] = []
+
+    for label, extractor in (("power", _power_w), ("voltage", _voltage_v), ("energy edition", _energy_editions)):
+        c, m = _compare(label, extractor(source), extractor(candidate))
+        conflicts.extend(c)
+        missing.extend(m)
+
+    if _energy_bundle(candidate) and not _energy_bundle(source):
+        conflicts.append("energy bundle mismatch: candidate includes battery/system bundle")
+
+    return CategoryAssessment(
+        ENERGY_POWER,
+        tuple(dict.fromkeys(conflicts)),
+        tuple(dict.fromkeys(missing)),
+    )
+
+
+def _wearable_models(text: str) -> set[str]:
+    raw = _norm(text)
+    out: set[str] = set()
+    for family, model in re.findall(r"\\b(magic|tank)\\s+([a-z]\\d{1,3})\\b", raw, re.I):
+        out.add((family + model).casefold())
+    return out
+
+
+def _wearable_skus(text: str) -> set[str]:
+    raw = _norm(text)
+    return {
+        token.casefold()
+        for token in re.findall(r"\\b(k[a-z]{2}\\d{4,}[a-z0-9]*)\\b", raw, re.I)
+    }
+
+
+def _special_edition(text: str) -> bool:
+    return bool(re.search(r"\\bspecial\\s+edition\\b|\\bспец(?:иальная|іальна)\\s+верс", _norm(text), re.I))
+
+
+def _wearable_assessment(source: str, candidate: str) -> CategoryAssessment:
+    conflicts: list[str] = []
+    missing: list[str] = []
+
+    expected_models = _wearable_models(source)
+    actual_models = _wearable_models(candidate)
+    if expected_models:
+        if not actual_models:
+            missing.append("wearable model")
+        elif expected_models.isdisjoint(actual_models):
+            conflicts.append(
+                f"wearable model mismatch: expected {sorted(expected_models)}, got {sorted(actual_models)}"
+            )
+
+    expected_skus = _wearable_skus(source)
+    actual_skus = _wearable_skus(candidate)
+    if expected_skus:
+        if not actual_skus:
+            missing.append("wearable SKU")
+        elif expected_skus.isdisjoint(actual_skus):
+            conflicts.append(
+                f"wearable SKU mismatch: expected {sorted(expected_skus)}, got {sorted(actual_skus)}"
+            )
+
+    source_special = _special_edition(source)
+    candidate_special = _special_edition(candidate)
+    if source_special != candidate_special:
+        if candidate_special or actual_skus:
+            conflicts.append("wearable edition mismatch: Special Edition vs base/other edition")
+        else:
+            missing.append("wearable edition")
+
+    return CategoryAssessment(
+        WEARABLE_MODEL_VARIANT,
+        tuple(dict.fromkeys(conflicts)),
+        tuple(dict.fromkeys(missing)),
+    )
+
+
 def assess_category(mission: ProductMission, offer_text: str) -> CategoryAssessment:
     profile = classify_category(mission)
     source = _norm(_source_text(mission))
@@ -200,4 +321,8 @@ def assess_category(mission: ProductMission, offer_text: str) -> CategoryAssessm
         return _multipack_assessment(source, candidate)
     if profile == CABLE_LENGTH_VARIANT:
         return _cable_assessment(source, candidate)
+    if profile == ENERGY_POWER:
+        return _energy_assessment(source, candidate)
+    if profile == WEARABLE_MODEL_VARIANT:
+        return _wearable_assessment(source, candidate)
     return CategoryAssessment()
