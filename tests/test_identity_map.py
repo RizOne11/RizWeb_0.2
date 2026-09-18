@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-import pytest
+import asyncio
 
 from priceintel.cache import Cache
 from puma_scouts import identity_map
@@ -66,8 +66,7 @@ def test_identity_map_round_trip_uses_product_fingerprint(tmp_path, monkeypatch)
     assert identity_map.load_identity_urls(changed, "web_shops") == []
 
 
-@pytest.mark.asyncio
-async def test_webshops_serper_stops_after_first_success(monkeypatch):
+def test_webshops_serper_stops_after_first_success(monkeypatch):
     scout = WebShopsScout(timeout=1, max_candidates_per_query=5)
     scout.serper.api_key = "test-key"
     mission = _mission()
@@ -95,7 +94,7 @@ async def test_webshops_serper_stops_after_first_success(monkeypatch):
     monkeypatch.setattr(scout, "_serper_urls", serper_urls)
     monkeypatch.setattr(scout, "_fetch_urls", fetch_urls)
 
-    report = await scout.scan(mission)
+    report = asyncio.run(scout.scan(mission))
 
     assert calls == ["Honda EU35i"]
     assert report.metrics["serper_queries_attempted"] == 1
@@ -104,8 +103,7 @@ async def test_webshops_serper_stops_after_first_success(monkeypatch):
     assert report.metrics["serper_success_query"] == 1
 
 
-@pytest.mark.asyncio
-async def test_webshops_identity_hit_skips_discovery_and_serper(monkeypatch):
+def test_webshops_identity_hit_skips_discovery_and_serper(monkeypatch):
     scout = WebShopsScout(timeout=1, max_candidates_per_query=5)
     mission = _mission()
     free_search_calls = 0
@@ -133,7 +131,7 @@ async def test_webshops_identity_hit_skips_discovery_and_serper(monkeypatch):
     monkeypatch.setattr(scout, "_urls", should_not_search)
     monkeypatch.setattr(scout, "_fetch_urls", fetch_urls)
 
-    report = await scout.scan(mission)
+    report = asyncio.run(scout.scan(mission))
 
     assert free_search_calls == 0
     assert report.metrics["identity_refresh_hit"] is True
