@@ -281,15 +281,15 @@ class CatalogScout(MarketplaceScout):
         return len(urls), offers
 
     async def discover(self, mission: ProductMission, query: str) -> list[Offer]:
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            _, offers = await self._discover_stage(client, mission, query, "native")
-            if offers:
-                return offers
-            _, fallback = await self._discover_stage(client, mission, query, "external")
-            if fallback:
-                return fallback
-            _, serper = await self._discover_stage(client, mission, query, "serper")
-            return serper
+        client = await self.http_client()
+        _, offers = await self._discover_stage(client, mission, query, "native")
+        if offers:
+            return offers
+        _, fallback = await self._discover_stage(client, mission, query, "external")
+        if fallback:
+            return fallback
+        _, serper = await self._discover_stage(client, mission, query, "serper")
+        return serper
 
     async def scan(self, mission: ProductMission) -> ScanReport:
         queries = (await self.generate_queries(mission))[:4]
@@ -306,50 +306,94 @@ class CatalogScout(MarketplaceScout):
             "serper_cache_hits": 0,
             "serper_rescued": False,
             "serper_success_query": 0,
+            "refresh_only": self.refresh_only(),
+            "identity_urls_attempted": 0,
+            "repair_required": False,
         }
 
-        async with httpx.AsyncClient(timeout=self.timeout, limits=httpx.Limits(max_connections=30, max_keepalive_connections=15)) as client:
-            known_urls = load_identity_urls(mission, source_name, limit=self.max_candidates_per_query)
-            metrics["identity_urls_loaded"] = len(known_urls)
-            if known_urls:
-                identity_offers = await self._fetch_offers(
-                    client, mission, "identity-map", known_urls, "identity-refresh"
+        client = await self.http_client()
+        identity_limit = self.identity_refresh_limit() if self.refresh_only() else self.max_candidates_per_query
+        known_urls = load_identity_urls(mission, source_name, limit=identity_limit)
+        metrics["identity_urls_loaded"] = len(known_urls)
+        metrics["identity_urls_attempted"] = len(known_urls)
+        if known_urls:
+            identity_offers = await self._fetch_offers(
+                client, mission, "identity-map", known_urls, "identity-refresh"
+            )
+            for offer in identity_offers:
+                unique.setdefault(str(offer.url), offer)
+            identity_validated = [validate_offer(mission, o) for o in unique.values()]
+            identity_price_passes = [
+                x for x in identity_validated
+                if x.verdict == Verdict.PASS and x.offer.price is not None
+            ]
+            if identity_price_passes:
+                metrics["identity_refresh_hit"] = True
+                metrics["identity_urls_saved"] = remember_confirmed_identities(
+                    mission, source_name, identity_validated
                 )
-                for offer in identity_offers:
-                    unique.setdefault(str(offer.url), offer)
-                identity_validated = [validate_offer(mission, o) for o in unique.values()]
-                identity_price_passes = [
-                    x for x in identity_validated
-                    if x.verdict == Verdict.PASS and x.offer.price is not None
-                ]
-                if identity_price_passes:
-                    metrics["identity_refresh_hit"] = True
-                    metrics["identity_urls_saved"] = remember_confirmed_identities(
-                        mission, source_name, identity_validated
-                    )
-                    return ScanReport(
-                        article=mission.article,
-                        marketplace=self.marketplace,
-                        health=ScanHealth.FOUND,
-                        queries_generated=0,
-                        pages_scanned=len(unique),
-                        candidates_seen=len(known_urls),
-                        candidates_collected=len(unique),
-                        duplicates_removed=max(0, len(known_urls) - len(unique)),
-                        search_rounds=0,
-                        errors=[],
-                        offers=identity_validated,
-                        metrics=metrics,
-                    )
-                unique.clear()
+                return ScanReport(
+                    article=mission.article,
+                    marketplace=self.marketplace,
+                    health=ScanHealth.FOUND,
+                    queries_generated=0,
+                    pages_scanned=len(unique),
+                    candidates_seen=len(known_urls),
+                    candidates_collected=len(unique),
+                    duplicates_removed=max(0, len(known_urls) - len(unique)),
+                    search_rounds=0,
+                    errors=[],
+                    offers=identity_validated,
+                    metrics=metrics,
+                )
+            unique.clear()
 
-            native_results = await asyncio.gather(
-                *(self._discover_stage(client, mission, q, "native") for q in queries),
+        if self.refresh_only():
+            metrics["repair_required"] = True
+            identity_validated = [validate_offer(mission, o) for o in unique.values()]
+            return ScanReport(
+                article=mission.article,
+                marketplace=self.marketplace,
+                health=ScanHealth.NOT_FOUND,
+                queries_generated=0,
+                pages_scanned=0,
+                candidates_seen=metrics["identity_urls_attempted"],
+                candidates_collected=0,
+                duplicates_removed=0,
+                search_rounds=0,
+                errors=[],
+                offers=identity_validated,
+                metrics=metrics,
+            )
+
+        native_results = await asyncio.gather(
+            *(self._discover_stage(client, mission, q, "native") for q in queries),
+            return_exceptions=True,
+        )
+        for q, result in zip(queries, native_results):
+            if isinstance(result, Exception):
+                errors.append(f"native {q!r}: {type(result).__name__}: {result}")
+                continue
+            count, offers = result
+            seen += count
+            for offer in offers:
+                unique.setdefault(str(offer.url), offer)
+
+        validated = [validate_offer(mission, o) for o in unique.values()]
+        price_passes = [
+            x for x in validated
+            if x.verdict == Verdict.PASS and x.offer.price is not None
+        ]
+
+        fallback_queries = queries[:2]
+        if not price_passes and fallback_queries:
+            external_results = await asyncio.gather(
+                *(self._discover_stage(client, mission, q, "external") for q in fallback_queries),
                 return_exceptions=True,
             )
-            for q, result in zip(queries, native_results):
+            for q, result in zip(fallback_queries, external_results):
                 if isinstance(result, Exception):
-                    errors.append(f"native {q!r}: {type(result).__name__}: {result}")
+                    errors.append(f"external {q!r}: {type(result).__name__}: {result}")
                     continue
                 count, offers = result
                 seen += count
@@ -362,55 +406,34 @@ class CatalogScout(MarketplaceScout):
                 if x.verdict == Verdict.PASS and x.offer.price is not None
             ]
 
-            fallback_queries = queries[:2]
-            if not price_passes and fallback_queries:
-                external_results = await asyncio.gather(
-                    *(self._discover_stage(client, mission, q, "external") for q in fallback_queries),
-                    return_exceptions=True,
-                )
-                for q, result in zip(fallback_queries, external_results):
-                    if isinstance(result, Exception):
-                        errors.append(f"external {q!r}: {type(result).__name__}: {result}")
-                        continue
-                    count, offers = result
-                    seen += count
-                    for offer in offers:
-                        unique.setdefault(str(offer.url), offer)
+        # Serper is deliberately sequential: validate query #1 before spending query #2.
+        if not price_passes and fallback_queries and self.serper.enabled:
+            for index, q in enumerate(fallback_queries, 1):
+                metrics["serper_queries_attempted"] += 1
+                before_api = self.serper.api_requests
+                before_cache = self.serper.cache_hits
+                try:
+                    count, offers = await self._discover_stage(client, mission, q, "serper")
+                except Exception as exc:
+                    errors.append(f"serper {q!r}: {type(exc).__name__}: {exc}")
+                    metrics["serper_api_requests"] += self.serper.api_requests - before_api
+                    metrics["serper_cache_hits"] += self.serper.cache_hits - before_cache
+                    continue
+                metrics["serper_api_requests"] += self.serper.api_requests - before_api
+                metrics["serper_cache_hits"] += self.serper.cache_hits - before_cache
+                seen += count
+                for offer in offers:
+                    unique.setdefault(str(offer.url), offer)
 
                 validated = [validate_offer(mission, o) for o in unique.values()]
                 price_passes = [
                     x for x in validated
                     if x.verdict == Verdict.PASS and x.offer.price is not None
                 ]
-
-            # Serper is deliberately sequential: validate query #1 before spending query #2.
-            if not price_passes and fallback_queries and self.serper.enabled:
-                for index, q in enumerate(fallback_queries, 1):
-                    metrics["serper_queries_attempted"] += 1
-                    before_api = self.serper.api_requests
-                    before_cache = self.serper.cache_hits
-                    try:
-                        count, offers = await self._discover_stage(client, mission, q, "serper")
-                    except Exception as exc:
-                        errors.append(f"serper {q!r}: {type(exc).__name__}: {exc}")
-                        metrics["serper_api_requests"] += self.serper.api_requests - before_api
-                        metrics["serper_cache_hits"] += self.serper.cache_hits - before_cache
-                        continue
-                    metrics["serper_api_requests"] += self.serper.api_requests - before_api
-                    metrics["serper_cache_hits"] += self.serper.cache_hits - before_cache
-                    seen += count
-                    for offer in offers:
-                        unique.setdefault(str(offer.url), offer)
-
-                    validated = [validate_offer(mission, o) for o in unique.values()]
-                    price_passes = [
-                        x for x in validated
-                        if x.verdict == Verdict.PASS and x.offer.price is not None
-                    ]
-                    if price_passes:
-                        metrics["serper_rescued"] = True
-                        metrics["serper_success_query"] = index
-                        break
+                if price_passes:
+                    metrics["serper_rescued"] = True
+                    metrics["serper_success_query"] = index
+                    break
 
         validated = [validate_offer(mission, o) for o in unique.values()]
         passes = [x for x in validated if x.verdict == Verdict.PASS]
