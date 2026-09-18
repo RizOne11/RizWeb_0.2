@@ -33,6 +33,7 @@ def _fmt_price(value: float | None) -> str:
 def _market_cells(offers: list[dict[str, Any]]) -> dict[str, str]:
     grouped: dict[str, list[float]] = defaultdict(list)
     for o in offers:
+        if o.get("price_status") == "SUSPICIOUS": continue
         p = _num(o.get("price"))
         if p is not None: grouped[o.get("source", "")].append(p)
     out = {name: "НЕ ПЕРЕВІРЯЛОСЬ" for name in MARKET_COLUMNS}
@@ -42,7 +43,7 @@ def _market_cells(offers: list[dict[str, Any]]) -> dict[str, str]:
     return out
 
 def _other_shops(offers: list[dict[str, Any]]) -> tuple[str, int, int]:
-    rows = [o for o in offers if o.get("source") == "web_shops"]
+    rows = [o for o in offers if o.get("source") == "web_shops" and o.get("price_status") != "SUSPICIOUS"]
     grouped: dict[str, list[float]] = defaultdict(list)
     for o in rows:
         p = _num(o.get("price"))
@@ -91,28 +92,30 @@ def save_classic(products: list[dict[str, Any]], output: str, supplier: str = ""
     ws.append(HEADERS)
     for product in products:
         offers = product.get("offer_rows") or product.get("offers_detail") or []
-        prices = [_num(o.get("price")) for o in offers]
-        prices = [p for p in prices if p is not None]
+        valid_offers = [o for o in offers if o.get("price_status") != "SUSPICIOUS"]
         own = _num(product.get("own_price"))
-        mn = min(prices) if prices else None
-        med = median(prices) if prices else None
-        avg = round(sum(prices) / len(prices), 2) if prices else None
-        mx = max(prices) if prices else None
+        mn = product.get("min_price")
+        med = product.get("median_price")
+        avg = product.get("avg_price")
+        mx = product.get("max_price")
         market_cells = _market_cells(offers)
         other_text, other_domains, other_count = _other_shops(offers)
         tier_checked, tier_found, tier_status = _source_status(product)
-        verdict, reason, reserve, reserve_pct, score = _verdict(own, med, len(offers))
-        suspicious = sum(1 for p in prices if med and (p < med * 0.5 or p > med * 1.8))
-        domains = {o.get("domain") or o.get("source") for o in offers if o.get("domain") or o.get("source")}
-        at_my_price = sum(1 for p in prices if own is not None and p <= own)
-        conf = Counter(o.get("identity_confidence", "") for o in offers)
-        reliability = "Висока" if conf.get("CONFIRMED", 0) else ("Середня" if offers else "Немає даних")
+        verdict = product.get("price_verdict") or "⚪ НЕ ЗНАЙДЕНО"
+        reason = product.get("price_verdict_reason") or "NO_VALID_MARKET_OFFERS"
+        reserve = product.get("reserve_uah")
+        reserve_pct = product.get("reserve_pct")
+        score = int(product.get("price_score") or 0)
+        suspicious = int(product.get("suspicious_price_count") or 0)
+        domains = {o.get("domain") or o.get("source") for o in valid_offers if o.get("domain") or o.get("source")}
+        at_my_price = int(product.get("same_price_count") or 0)
+        reliability = product.get("market_confidence") or "Немає даних"
         row = [
             verdict, reason, product.get("name", ""), product.get("category", ""), product.get("supplier") or supplier,
             product.get("article", ""), product.get("old_price", ""), product.get("discount", ""), own,
-            mn, med, avg, mx, len(offers), product.get("sources", 0), tier_checked, tier_found, tier_status,
+            mn, med, avg, mx, int(product.get("valid_offer_count") or len(valid_offers)), product.get("sources", 0), tier_checked, tier_found, tier_status,
             *[market_cells[name] for name in MARKET_COLUMNS], other_text, len(domains), other_count,
-            len(domains), at_my_price, reliability, suspicious, reserve, reserve_pct, score, "v1.3", "Пума (Чернявський А.)"
+            int(product.get("valid_offer_count") or len(valid_offers)), at_my_price, reliability, suspicious, reserve, reserve_pct, score, "v1.3", "Пума (Чернявський А.)"
         ]
         ws.append(row)
     ws.freeze_panes = "A4"
@@ -134,6 +137,7 @@ def save_classic(products: list[dict[str, Any]], output: str, supplier: str = ""
     about = wb.create_sheet("Про звіт")
     about.append(["PUMA Classic Report", "Додатковий аналітичний звіт. Основний детальний звіт не замінюється."])
     about.append(["Discovery", "Статуси джерел формуються з фактичної діагностики сканування; непідтримувані старі джерела позначені як НЕ ПЕРЕВІРЯЛОСЬ."])
+    about.append(["Price Score", "Швидка детермінована оцінка позиції власної ціни відносно збалансованої медіани незалежних джерел. 100 = щонайменше 15% дешевше ринку; 50 = на рівні медіани; 0 = щонайменше 20% дорожче. Підозрілі цінові викиди не впливають на оцінку."])
     about.column_dimensions["A"].width = 24
     about.column_dimensions["B"].width = 100
     wb.save(output)
