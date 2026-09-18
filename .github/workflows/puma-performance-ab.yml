@@ -64,3 +64,5 @@ jobs:
               if k in ('product_concurrency','source_timing','serper_api_requests','serper_cache_hits')
           },ensure_ascii=False), flush=True)
           PY
+
+# rerun after RU-UA query and brand port
