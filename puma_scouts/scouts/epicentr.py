@@ -11,6 +11,7 @@ from urllib.parse import quote_plus, urljoin, urlsplit, urlunsplit
 import httpx
 from bs4 import BeautifulSoup
 
+from puma_scouts.identity_map import load_identity_urls, remember_confirmed_identities
 from puma_scouts.models import Marketplace, Offer, ProductMission, ScanHealth, ScanReport, Verdict
 from puma_scouts.query import generate_queries
 from puma_scouts.scouts.base import MarketplaceScout
@@ -247,8 +248,53 @@ class EpicentrScout(MarketplaceScout):
         unique = {}
         errors = []
         seen = 0
+        source_name = self.marketplace.value
+        metrics = {
+            "identity_urls_loaded": 0,
+            "identity_refresh_hit": False,
+            "identity_urls_saved": 0,
+            "serper_queries_attempted": 0,
+            "serper_api_requests": 0,
+            "serper_cache_hits": 0,
+            "serper_rescued": False,
+            "serper_success_query": 0,
+        }
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
+            known_urls = load_identity_urls(mission, source_name, limit=self.max_candidates_per_query)
+            metrics["identity_urls_loaded"] = len(known_urls)
+            if known_urls:
+                identity_offers = await self._fetch_offers(
+                    client, mission, "identity-map", known_urls, "identity-refresh"
+                )
+                for offer in identity_offers:
+                    unique.setdefault(str(offer.url), offer)
+                identity_validated = [validate_offer(mission, offer) for offer in unique.values()]
+                identity_price_passes = [
+                    item for item in identity_validated
+                    if item.verdict == Verdict.PASS and item.offer.price is not None
+                ]
+                if identity_price_passes:
+                    metrics["identity_refresh_hit"] = True
+                    metrics["identity_urls_saved"] = remember_confirmed_identities(
+                        mission, source_name, identity_validated
+                    )
+                    return ScanReport(
+                        article=mission.article,
+                        marketplace=self.marketplace,
+                        health=ScanHealth.FOUND,
+                        queries_generated=0,
+                        pages_scanned=len(unique),
+                        candidates_seen=len(known_urls),
+                        candidates_collected=len(unique),
+                        duplicates_removed=max(0, len(known_urls) - len(unique)),
+                        search_rounds=0,
+                        errors=[],
+                        offers=identity_validated,
+                        metrics=metrics,
+                    )
+                unique.clear()
+
             native_results = await asyncio.gather(
                 *(self._candidate_urls(client, query) for query in queries),
                 return_exceptions=True,
@@ -273,31 +319,47 @@ class EpicentrScout(MarketplaceScout):
                     unique.setdefault(str(offer.url), offer)
 
             validated = [validate_offer(mission, offer) for offer in unique.values()]
-            passes = [item for item in validated if item.verdict == Verdict.PASS]
+            price_passes = [
+                item for item in validated
+                if item.verdict == Verdict.PASS and item.offer.price is not None
+            ]
 
-            if not passes and self.serper.enabled:
-                async def serper_batch(query):
-                    urls = await self._serper_candidate_urls(client, query)
-                    offers = await self._fetch_offers(client, mission, query, urls, "serper")
-                    return len(urls), offers
-
-                serper_queries = queries[:2]
-                serper_results = await asyncio.gather(
-                    *(serper_batch(query) for query in serper_queries),
-                    return_exceptions=True,
-                )
-                for query, result in zip(serper_queries, serper_results):
-                    if isinstance(result, Exception):
-                        errors.append(f"serper {query!r}: {type(result).__name__}: {result}")
+            # Query #2 is only spent if query #1 failed to produce a priced PASS.
+            if not price_passes and self.serper.enabled:
+                for index, query in enumerate(queries[:2], 1):
+                    metrics["serper_queries_attempted"] += 1
+                    before_api = self.serper.api_requests
+                    before_cache = self.serper.cache_hits
+                    try:
+                        urls = await self._serper_candidate_urls(client, query)
+                        offers = await self._fetch_offers(client, mission, query, urls, "serper")
+                    except Exception as exc:
+                        errors.append(f"serper {query!r}: {type(exc).__name__}: {exc}")
+                        metrics["serper_api_requests"] += self.serper.api_requests - before_api
+                        metrics["serper_cache_hits"] += self.serper.cache_hits - before_cache
                         continue
-                    count, offers = result
-                    seen += count
+                    metrics["serper_api_requests"] += self.serper.api_requests - before_api
+                    metrics["serper_cache_hits"] += self.serper.cache_hits - before_cache
+                    seen += len(urls)
                     for offer in offers:
                         unique.setdefault(str(offer.url), offer)
+
+                    validated = [validate_offer(mission, offer) for offer in unique.values()]
+                    price_passes = [
+                        item for item in validated
+                        if item.verdict == Verdict.PASS and item.offer.price is not None
+                    ]
+                    if price_passes:
+                        metrics["serper_rescued"] = True
+                        metrics["serper_success_query"] = index
+                        break
 
         validated = [validate_offer(mission, offer) for offer in unique.values()]
         passes = [item for item in validated if item.verdict == Verdict.PASS]
         conflicts = [item for item in validated if item.verdict == Verdict.CONFLICT]
+        metrics["identity_urls_saved"] = remember_confirmed_identities(
+            mission, source_name, validated
+        )
         health = (
             ScanHealth.PARTIAL if passes and errors
             else ScanHealth.FOUND if passes
@@ -317,4 +379,5 @@ class EpicentrScout(MarketplaceScout):
             search_rounds=len(queries),
             errors=errors,
             offers=validated,
+            metrics=metrics,
         )
