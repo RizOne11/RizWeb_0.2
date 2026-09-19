@@ -36,11 +36,11 @@ class MarketplaceScout(ABC):
         if self.marketplace == Marketplace.WEB_SHOPS:
             raw = os.getenv("PUMA_REFRESH_WEB_URL_LIMIT", "3")
         else:
-            raw = os.getenv("PUMA_REFRESH_URL_LIMIT", "1")
+            raw = os.getenv("PUMA_REFRESH_URL_LIMIT", "3")
         try:
             return max(1, min(int(raw), 12))
         except ValueError:
-            return 3 if self.marketplace == Marketplace.WEB_SHOPS else 1
+            return 3
 
     @abstractmethod
     async def generate_queries(self, mission: ProductMission) -> list[str]: ...

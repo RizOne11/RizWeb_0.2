@@ -79,6 +79,26 @@ def _save_probable_enabled() -> bool:
     }
 
 
+def _safe_probable_identity(item: ValidatedOffer) -> bool:
+    """Allow only PROBABLE rows that already carry a strong identity anchor.
+
+    Plain title/token similarity is intentionally not enough. This prevents the
+    0.79 similarity-only bucket from becoming a durable identity while allowing
+    category-profile downgrades of otherwise strongly identified products.
+    """
+    if item.conflicts:
+        return False
+    strong_prefixes = (
+        "strong identifier match:",
+        "explicit model match:",
+        "exact model code match:",
+    )
+    return any(
+        str(evidence or "").startswith(strong_prefixes)
+        for evidence in (item.positive_evidence or [])
+    )
+
+
 def remember_confirmed_identities(
     mission: ProductMission,
     source: str,
@@ -103,7 +123,11 @@ def remember_confirmed_identities(
             continue
         if item.identity_confidence == IdentityConfidence.CONFIRMED:
             pass
-        elif allow_probable and item.identity_confidence == IdentityConfidence.PROBABLE:
+        elif (
+            allow_probable
+            and item.identity_confidence == IdentityConfidence.PROBABLE
+            and _safe_probable_identity(item)
+        ):
             pass
         else:
             continue

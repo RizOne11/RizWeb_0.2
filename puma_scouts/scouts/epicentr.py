@@ -225,11 +225,13 @@ class EpicentrScout(MarketplaceScout):
         urls = await self.serper.search_urls(query, client=client, site="epicentrk.ua")
         return [url for url in urls if _is_product_url(url)][: self.max_candidates_per_query]
 
-    async def _fetch_offers(self, client, mission, query, urls, method):
+    async def _fetch_offers(self, client, mission, query, urls, method, errors=None):
         async def one(url):
             try:
                 return _offer_from_page(mission.article, url, await self._get_product(client, url), query, method)
-            except (httpx.HTTPError, ValueError, json.JSONDecodeError):
+            except (httpx.HTTPError, ValueError, json.JSONDecodeError) as exc:
+                if errors is not None:
+                    errors.append(f"{method} {url}: {type(exc).__name__}: {exc}")
                 return None
         result = await asyncio.gather(*(one(url) for url in urls))
         return [offer for offer in result if offer]
@@ -271,7 +273,7 @@ class EpicentrScout(MarketplaceScout):
         metrics["identity_urls_attempted"] = len(known_urls)
         if known_urls:
             identity_offers = await self._fetch_offers(
-                client, mission, "identity-map", known_urls, "identity-refresh"
+                client, mission, "identity-map", known_urls, "identity-refresh", errors=errors
             )
             for offer in identity_offers:
                 unique.setdefault(str(offer.url), offer)
@@ -295,7 +297,7 @@ class EpicentrScout(MarketplaceScout):
                     candidates_collected=len(unique),
                     duplicates_removed=max(0, len(known_urls) - len(unique)),
                     search_rounds=0,
-                    errors=[],
+                    errors=errors,
                     offers=identity_validated,
                     metrics=metrics,
                 )
@@ -316,7 +318,7 @@ class EpicentrScout(MarketplaceScout):
                 candidates_collected=0,
                 duplicates_removed=0,
                 search_rounds=0,
-                errors=[],
+                errors=errors,
                 offers=[],
                 metrics=metrics,
             )

@@ -186,11 +186,13 @@ class WebShopsScout(MarketplaceScout):
             discovery_method=f"{method}->shop-jsonld",
         )
 
-    async def _fetch_urls(self, client, mission, query, urls, method):
+    async def _fetch_urls(self, client, mission, query, urls, method, errors=None):
         async def one(url):
             try:
                 return self._offer(mission, url, await self._get_product(client, url), query, method)
-            except httpx.HTTPError:
+            except httpx.HTTPError as exc:
+                if errors is not None:
+                    errors.append(f"{method} {url}: {type(exc).__name__}: {exc}")
                 return None
 
         result = await asyncio.gather(*(one(url) for url in urls))
@@ -233,7 +235,7 @@ class WebShopsScout(MarketplaceScout):
         metrics["identity_urls_attempted"] = len(known_urls)
         if known_urls:
             identity_offers = await self._fetch_urls(
-                client, mission, "identity-map", known_urls, "identity-refresh"
+                client, mission, "identity-map", known_urls, "identity-refresh", errors=errors
             )
             for offer in identity_offers:
                 unique.setdefault(str(offer.url), offer)
@@ -257,7 +259,7 @@ class WebShopsScout(MarketplaceScout):
                     candidates_collected=len(unique),
                     duplicates_removed=max(0, len(known_urls) - len(unique)),
                     search_rounds=0,
-                    errors=[],
+                    errors=errors,
                     offers=identity_validated,
                     metrics=metrics,
                 )
@@ -278,7 +280,7 @@ class WebShopsScout(MarketplaceScout):
                 candidates_collected=0,
                 duplicates_removed=0,
                 search_rounds=0,
-                errors=[],
+                errors=errors,
                 offers=[],
                 metrics=metrics,
             )

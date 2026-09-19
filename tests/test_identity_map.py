@@ -317,3 +317,38 @@ def test_identity_rows_rank_confirmed_before_probable(tmp_path):
     )
     rows = cache.get_identities(key, "prom", 3600, 10, identity_version=version)
     assert [row["confidence"] for row in rows[:2]] == ["CONFIRMED", "PROBABLE"]
+
+
+def test_probable_identity_requires_strong_anchor(tmp_path, monkeypatch):
+    cache = Cache(str(tmp_path / "identity-safe-probable.sqlite"))
+    monkeypatch.setattr(identity_map, "runtime_cache", lambda: cache)
+    monkeypatch.setattr(identity_map, "identity_cache_seconds", lambda: 3600)
+    monkeypatch.setenv("PUMA_IDENTITY_SAVE_PROBABLE", "1")
+
+    mission = _mission()
+    similarity_only = ValidatedOffer(
+        offer=_offer(url="https://shop.example.ua/lookalike"),
+        verdict=Verdict.PASS,
+        score=0.79,
+        identity_confidence=IdentityConfidence.PROBABLE,
+        positive_evidence=["source token overlap=0.88"],
+    )
+    strong_probable = ValidatedOffer(
+        offer=_offer(url="https://shop.example.ua/strong"),
+        verdict=Verdict.PASS,
+        score=0.79,
+        identity_confidence=IdentityConfidence.PROBABLE,
+        positive_evidence=["explicit model match: EU35i", "category critical attributes not confirmed: power"],
+    )
+
+    assert identity_map.remember_confirmed_identities(mission, "web_shops", [similarity_only]) == 0
+    assert identity_map.remember_confirmed_identities(mission, "web_shops", [strong_probable]) == 1
+    assert identity_map.load_identity_urls(mission, "web_shops") == [
+        "https://shop.example.ua/strong"
+    ]
+
+
+def test_marketplace_refresh_default_tries_three_urls(monkeypatch):
+    scout = WebShopsScout(timeout=1, max_candidates_per_query=5)
+    monkeypatch.delenv("PUMA_REFRESH_WEB_URL_LIMIT", raising=False)
+    assert scout.identity_refresh_limit() == 3
