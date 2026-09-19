@@ -16,11 +16,20 @@ class Cache:
             )
             self.db.execute(
                 "CREATE TABLE IF NOT EXISTS identities("
-                "identity_key TEXT, source TEXT, url TEXT, title TEXT, product_id TEXT, confidence TEXT, ts REAL, "
+                "identity_key TEXT, source TEXT, url TEXT, title TEXT, product_id TEXT, confidence TEXT, "
+                "identity_version TEXT DEFAULT '', ts REAL, "
                 "PRIMARY KEY(identity_key, source, url))"
             )
+            columns = {
+                row[1] for row in self.db.execute("PRAGMA table_info(identities)").fetchall()
+            }
+            if "identity_version" not in columns:
+                self.db.execute(
+                    "ALTER TABLE identities ADD COLUMN identity_version TEXT DEFAULT ''"
+                )
             self.db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_identities_lookup ON identities(identity_key, source, ts)"
+                "CREATE INDEX IF NOT EXISTS idx_identities_lookup "
+                "ON identities(identity_key, source, identity_version, ts)"
             )
             self.db.commit()
 
@@ -52,25 +61,66 @@ class Cache:
             self.db.commit()
 
 
-    def get_identities(self, identity_key, source, max_age=2592000, limit=24):
+    def get_identities(
+        self,
+        identity_key,
+        source,
+        max_age=2592000,
+        limit=24,
+        identity_version=None,
+    ):
         cutoff = time.time() - max_age
+        params = [identity_key, source, cutoff]
+        version_sql = ""
+        if identity_version is not None:
+            version_sql = " AND identity_version=?"
+            params.append(str(identity_version))
+        params.append(int(limit))
         with self._lock:
             rows = self.db.execute(
-                "SELECT url,title,product_id,confidence,ts FROM identities "
-                "WHERE identity_key=? AND source=? AND ts>=? ORDER BY ts DESC LIMIT ?",
-                (identity_key, source, cutoff, int(limit)),
+                "SELECT url,title,product_id,confidence,identity_version,ts FROM identities "
+                "WHERE identity_key=? AND source=? AND ts>=?" + version_sql + " "
+                "ORDER BY CASE confidence WHEN 'CONFIRMED' THEN 0 WHEN 'PROBABLE' THEN 1 ELSE 2 END, "
+                "ts DESC LIMIT ?",
+                tuple(params),
             ).fetchall()
         return [
-            {"url": row[0], "title": row[1] or "", "product_id": row[2] or "", "confidence": row[3] or "", "ts": row[4]}
+            {
+                "url": row[0],
+                "title": row[1] or "",
+                "product_id": row[2] or "",
+                "confidence": row[3] or "",
+                "identity_version": row[4] or "",
+                "ts": row[5],
+            }
             for row in rows
         ]
 
-    def put_identity(self, identity_key, source, url, title="", product_id="", confidence="CONFIRMED"):
+    def put_identity(
+        self,
+        identity_key,
+        source,
+        url,
+        title="",
+        product_id="",
+        confidence="CONFIRMED",
+        identity_version="",
+    ):
         with self._lock:
             self.db.execute(
-                "INSERT OR REPLACE INTO identities(identity_key,source,url,title,product_id,confidence,ts) "
-                "VALUES(?,?,?,?,?,?,?)",
-                (identity_key, source, url, title, product_id, confidence, time.time()),
+                "INSERT OR REPLACE INTO identities("
+                "identity_key,source,url,title,product_id,confidence,identity_version,ts"
+                ") VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    identity_key,
+                    source,
+                    url,
+                    title,
+                    product_id,
+                    confidence,
+                    identity_version,
+                    time.time(),
+                ),
             )
             self.db.commit()
 
