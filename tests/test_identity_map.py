@@ -83,7 +83,7 @@ def test_webshops_serper_stops_after_first_success(monkeypatch):
         scout.serper.api_requests += 1
         return ["https://shop.example.ua/honda-eu35i"]
 
-    async def fetch_urls(client, mission, query, urls, method):
+    async def fetch_urls(client, mission, query, urls, method, errors=None):
         return [_offer()] if urls else []
 
     monkeypatch.setattr(web_module, "load_identity_urls", lambda *a, **k: [])
@@ -168,7 +168,7 @@ def test_refresh_only_marks_repair_without_discovery(monkeypatch):
         free_search_calls += 1
         return []
 
-    async def dead_identity(client, mission, query, urls, method):
+    async def dead_identity(client, mission, query, urls, method, errors=None):
         assert method == "identity-refresh"
         return []
 
@@ -277,6 +277,7 @@ def test_probable_identity_is_optional_and_keeps_confidence(tmp_path, monkeypatc
         verdict=Verdict.PASS,
         score=0.78,
         identity_confidence=IdentityConfidence.PROBABLE,
+        positive_evidence=["explicit model match: EU35i"],
     )
 
     monkeypatch.delenv("PUMA_IDENTITY_SAVE_PROBABLE", raising=False)
