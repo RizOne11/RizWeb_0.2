@@ -353,3 +353,21 @@ def test_marketplace_refresh_default_tries_three_urls(monkeypatch):
     scout = WebShopsScout(timeout=1, max_candidates_per_query=5)
     monkeypatch.delenv("PUMA_REFRESH_WEB_URL_LIMIT", raising=False)
     assert scout.identity_refresh_limit() == 3
+
+
+def test_discovery_source_state_round_trip_and_known_empty(tmp_path, monkeypatch):
+    cache = Cache(str(tmp_path / "discovery-sources.sqlite"))
+    monkeypatch.setattr(identity_map, "runtime_cache", lambda: cache)
+    monkeypatch.setattr(identity_map, "identity_cache_seconds", lambda: 3600)
+
+    mission = _mission()
+    assert identity_map.load_discovery_sources(mission) is None
+    assert identity_map.remember_discovery_sources(mission, {"prom", "epicentr", "prom"}) is True
+    assert identity_map.load_discovery_sources(mission) == ["epicentr", "prom"]
+
+    missed = ProductMission(
+        article="SKU-MISS",
+        source_data={"name": "Never Found Product", "brand": "None", "model": "NF-1"},
+    )
+    assert identity_map.remember_discovery_sources(missed, set()) is True
+    assert identity_map.load_discovery_sources(missed) == []

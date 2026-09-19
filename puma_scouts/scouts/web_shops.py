@@ -208,7 +208,7 @@ class WebShopsScout(MarketplaceScout):
         return []
 
     async def scan(self, mission):
-        queries = await self.generate_queries(mission)
+        queries = self.bound_queries(await self.generate_queries(mission))
         unique = {}
         errors = []
         seen = 0

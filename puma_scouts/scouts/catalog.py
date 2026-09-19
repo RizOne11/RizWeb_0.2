@@ -294,7 +294,7 @@ class CatalogScout(MarketplaceScout):
         return serper
 
     async def scan(self, mission: ProductMission) -> ScanReport:
-        queries = (await self.generate_queries(mission))[:4]
+        queries = self.bound_queries((await self.generate_queries(mission))[:4])
         unique: dict[str, Offer] = {}
         errors: list[str] = []
         seen = 0

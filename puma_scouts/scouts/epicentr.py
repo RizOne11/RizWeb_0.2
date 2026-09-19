@@ -246,7 +246,7 @@ class EpicentrScout(MarketplaceScout):
         return []
 
     async def scan(self, mission: ProductMission) -> ScanReport:
-        queries = await self.generate_queries(mission)
+        queries = self.bound_queries(await self.generate_queries(mission))
         unique = {}
         errors = []
         seen = 0

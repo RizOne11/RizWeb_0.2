@@ -48,6 +48,57 @@ def mission_identity_version(mission: ProductMission) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
 
+def _discovery_state_key(mission: ProductMission) -> str:
+    return (
+        "puma:discovery-sources:v1:"
+        + mission_identity_key(mission)
+        + ":"
+        + mission_identity_version(mission)
+    )
+
+
+def remember_discovery_sources(mission: ProductMission, sources: Iterable[str]) -> bool:
+    """Remember only marketplaces that produced accepted offers in full Discovery.
+
+    Empty source lists are persisted too, so Fast Refresh can distinguish a
+    known Discovery miss from missing/legacy state and avoid wasteful repair.
+    """
+    cache = runtime_cache()
+    if not cache:
+        return False
+    clean = sorted({str(source or "").strip() for source in sources if str(source or "").strip()})
+    try:
+        cache.put_search(
+            _discovery_state_key(mission),
+            json.dumps({"sources": clean}, ensure_ascii=False, separators=(",", ":")),
+        )
+        return True
+    except Exception:
+        return False
+
+
+def load_discovery_sources(mission: ProductMission) -> list[str] | None:
+    """Return known Discovery sources, [] for a known miss, None for no state."""
+    cache = runtime_cache()
+    ttl = identity_cache_seconds()
+    if not cache or ttl <= 0:
+        return None
+    try:
+        raw = cache.get_search(_discovery_state_key(mission), ttl)
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    values = payload.get("sources") if isinstance(payload, dict) else None
+    if not isinstance(values, list):
+        return None
+    return list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
+
+
 def load_identity_urls(mission: ProductMission, source: str, *, limit: int = 24) -> list[str]:
     cache = runtime_cache()
     ttl = identity_cache_seconds()

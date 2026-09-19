@@ -5,8 +5,10 @@ from pathlib import Path
 from typing import Any,Callable
 from openpyxl import Workbook,load_workbook
 from .classic_report import save_classic
+from .identity_map import load_discovery_sources,remember_discovery_sources
 from .models import IdentityConfidence,ProductMission,Verdict,ScanHealth,ScanReport
 from .price_score import assess_price_market
+from .scouts.base import repair_discovery_scope
 
 def _text(v:Any)->str:return "" if v is None else str(v).strip()
 def _currency_code(v:Any)->str:
@@ -96,6 +98,9 @@ SOURCE_HARD_TIMEOUT=max(
 )
 PRODUCT_CONCURRENCY=max(1,min(int(os.getenv("PUMA_PRODUCT_CONCURRENCY","4")),4))
 
+def _env_flag(name:str,default:str="0")->bool:
+    return os.getenv(name,default).strip().casefold() in {"1","true","yes","on"}
+
 async def _scan_source(
     scout,
     mission:ProductMission,
@@ -148,9 +153,18 @@ def _reason_summary(report)->str:
             if reason: reasons[reason]+=1
     return " | ".join(f"{reason} ×{count}" for reason,count in reasons.most_common(5))
 
-async def scan_detailed(mission:ProductMission,selected:list[str]|None=None,scout_pool:list[Any]|None=None)->tuple[list[dict[str,Any]],dict[str,Any]]:
-    active_scouts=scout_pool if scout_pool is not None else scouts(selected)
-    rows=[];diagnostics={};results=await asyncio.gather(*[_timed_scan_source(s,mission) for s in active_scouts])
+async def scan_detailed(mission:ProductMission,selected:list[str]|None=None,scout_pool:list[Any]|None=None,force_discovery:bool=False)->tuple[list[dict[str,Any]],dict[str,Any]]:
+    if scout_pool is not None:
+        wanted=set(selected or [])
+        active_scouts=[
+            s for s in scout_pool
+            if not wanted or getattr(getattr(s,"marketplace",None),"value",None) in wanted
+        ]
+    else:
+        active_scouts=scouts(selected)
+    rows=[];diagnostics={}
+    with repair_discovery_scope(force_discovery):
+        results=await asyncio.gather(*[_timed_scan_source(s,mission) for s in active_scouts])
     for scout,report,elapsed in results:
         source=scout.marketplace.value
         accepted=0
@@ -311,6 +325,8 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
     scout_pool=scouts(selected)
     semaphore=asyncio.Semaphore(PRODUCT_CONCURRENCY)
     lock=asyncio.Lock()
+    refresh_mode=_env_flag("PUMA_REFRESH_ONLY")
+    repair_enabled=refresh_mode and _env_flag("PUMA_REFRESH_REPAIR_ENABLED")
 
     async def one(index:int,m:ProductMission):
         async with semaphore:
@@ -318,6 +334,46 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
                 already_done=len(completed_state)
             if progress_cb:progress_cb(already_done,len(missions),m.source_data.get("name",m.article),f"Шукаємо реальні пропозиції… (паралельність {PRODUCT_CONCURRENCY})")
             found,diag=await scan_detailed(m,selected,scout_pool=scout_pool)
+            if not refresh_mode:
+                remember_discovery_sources(m,{x.get("source","") for x in found if x.get("source")})
+            elif repair_enabled and not found:
+                prior_sources=load_discovery_sources(m)
+                if prior_sources:
+                    allowed=set(selected or prior_sources)
+                    repair_targets=[src for src in prior_sources if src in allowed]
+                    if repair_targets:
+                        repair_found,repair_diag=await scan_detailed(
+                            m,repair_targets,scout_pool=scout_pool,force_discovery=True
+                        )
+                        repair_sources={x.get("source") for x in repair_found if x.get("source")}
+                        for src in repair_targets:
+                            before=diag.get(src,{})
+                            after=repair_diag.get(src,before)
+                            before_metrics=dict(before.get("metrics") or {})
+                            after_metrics=dict(after.get("metrics") or {})
+                            after_metrics["product_repair_attempted"]=True
+                            after_metrics["product_repair_rescued"]=src in repair_sources
+                            after_metrics["refresh_identity_urls_loaded_before_repair"]=int(
+                                before_metrics.get("identity_urls_loaded") or 0
+                            )
+                            after_metrics["refresh_identity_urls_attempted_before_repair"]=int(
+                                before_metrics.get("identity_urls_attempted") or 0
+                            )
+                            after_metrics["refresh_repair_required_before_repair"]=bool(
+                                before_metrics.get("repair_required")
+                            )
+                            after_metrics["refresh_discovery_gap_before_repair"]=bool(
+                                before_metrics.get("discovery_gap")
+                            )
+                            after["metrics"]=after_metrics
+                            after["errors"]=list(before.get("errors") or [])+list(after.get("errors") or [])
+                            after["elapsed_seconds"]=round(
+                                float(before.get("elapsed_seconds") or 0)
+                                +float(after.get("elapsed_seconds") or 0),3
+                            )
+                            diag[src]=after
+                        if repair_found:
+                            found=repair_found
             async with lock:
                 completed_state[index]={"article":m.article,"found":found,"diagnostics":diag}
                 _save_checkpoint(checkpoint_path,checkpoint_token,missions,completed_state)
@@ -363,6 +419,7 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
             bucket=source_discovery.setdefault(src,{
                 "products":0,"identity_refresh_hits":0,"identity_urls_loaded":0,"identity_urls_attempted":0,
                 "identity_urls_saved":0,"repair_required_products":0,"discovery_gap_products":0,
+                "repair_attempted_products":0,"repair_rescued_products":0,
                 "serper_queries_attempted":0,"serper_api_requests":0,"serper_cache_hits":0,
                 "serper_rescued_products":0,"serper_first_query_success":0,"serper_second_query_success":0,
             })
@@ -374,6 +431,8 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
             bucket["identity_urls_saved"]+=int(metrics.get("identity_urls_saved") or 0)
             bucket["repair_required_products"]+=int(bool(metrics.get("repair_required")))
             bucket["discovery_gap_products"]+=int(bool(metrics.get("discovery_gap")))
+            bucket["repair_attempted_products"]+=int(bool(metrics.get("product_repair_attempted")))
+            bucket["repair_rescued_products"]+=int(bool(metrics.get("product_repair_rescued")))
             bucket["serper_queries_attempted"]+=int(metrics.get("serper_queries_attempted") or 0)
             bucket["serper_api_requests"]+=int(metrics.get("serper_api_requests") or 0)
             bucket["serper_cache_hits"]+=int(metrics.get("serper_cache_hits") or 0)
@@ -413,13 +472,24 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
     serper_enabled=bool(serper_clients) and all(bool(getattr(s,"enabled",False)) for s in serper_clients)
     serper_disabled_reasons=sorted({str(getattr(s,"disabled_reason","") or "") for s in serper_clients if getattr(s,"disabled_reason","")})
     price_verdicts=Counter(p.get("price_verdict","") for p in products if p.get("price_verdict"))
+    repair_products_attempted=sum(
+        1 for source_map in diagnostics_by_article.values()
+        if any(bool((d.get("metrics") or {}).get("product_repair_attempted")) for d in source_map.values())
+    )
+    repair_products_rescued=sum(
+        1 for source_map in diagnostics_by_article.values()
+        if any(bool((d.get("metrics") or {}).get("product_repair_rescued")) for d in source_map.values())
+    )
     web_products=[{k:v for k,v in p.items() if k!="offer_rows"}|{"offers_detail":p["offer_rows"]} for p in products]
     result={
         "products":len(missions),"offers":len(rows),"found_products":found,
         "found_pct":round(found/max(1,len(missions))*100,1),"sources":len({x["source"] for x in rows}),
         "confirmed":confidence.get("CONFIRMED",0),"probable":confidence.get("PROBABLE",0),
         "product_concurrency":PRODUCT_CONCURRENCY,"source_timing":source_timing,
-        "refresh_only":os.getenv("PUMA_REFRESH_ONLY","0").strip().casefold() in {"1","true","yes","on"},
+        "refresh_only":refresh_mode,
+        "repair_enabled":repair_enabled,
+        "repair_products_attempted":repair_products_attempted,
+        "repair_products_rescued":repair_products_rescued,
         "serper_api_requests":serper_api_requests,"serper_cache_hits":serper_cache_hits,
         "serper_configured":serper_configured,"serper_enabled":serper_enabled,
         "serper_disabled_reasons":serper_disabled_reasons,
