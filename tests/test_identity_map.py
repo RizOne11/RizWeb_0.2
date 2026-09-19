@@ -116,7 +116,7 @@ def test_webshops_identity_hit_skips_discovery_and_serper(monkeypatch):
         free_search_calls += 1
         return []
 
-    async def fetch_urls(client, mission, query, urls, method):
+    async def fetch_urls(client, mission, query, urls, method, errors=None):
         assert method == "identity-refresh"
         return [_offer()] if urls else []
 
