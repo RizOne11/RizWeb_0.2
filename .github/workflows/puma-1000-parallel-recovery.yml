@@ -2,11 +2,11 @@ name: PUMA 1000 Parallel Performance Recovery
 # parallel-run-trigger-20260919
 
 on:
-  push:
-    branches: [puma-performance-recovery]
-    paths:
-      - '.github/workflows/puma-1000-parallel-recovery.yml'
   workflow_dispatch:
+
+concurrency:
+  group: puma-1000-performance-recovery
+  cancel-in-progress: false
 
 jobs:
   benchmark:
