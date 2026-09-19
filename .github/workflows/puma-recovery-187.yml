@@ -1,0 +1,190 @@
+name: PUMA Recovery 187 Lost SKU
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: puma-recovery-187-lost
+  cancel-in-progress: false
+
+jobs:
+  recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    permissions:
+      actions: read
+      contents: read
+    env:
+      PYTHONPATH: .
+      PUMA_SOURCE_WALL_TIMEOUT: "70"
+      PUMA_SOURCE_HARD_TIMEOUT: "140"
+      PUMA_PRODUCT_CONCURRENCY: "4"
+      PUMA_RUNTIME_CACHE_ENABLED: "1"
+      PUMA_RUNTIME_CACHE_PATH: "/tmp/puma-187-repair-cache.sqlite"
+      PUMA_SERPER_CACHE_SECONDS: "2592000"
+      PUMA_IDENTITY_CACHE_SECONDS: "2592000"
+      PUMA_REFRESH_URL_LIMIT: "3"
+      PUMA_REFRESH_WEB_URL_LIMIT: "3"
+      PUMA_REPAIR_QUERY_LIMIT: "1"
+      PUMA_IDENTITY_SAVE_PROBABLE: "1"
+      PUMA_REFRESH_REPAIR_ENABLED: "1"
+      SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: puma-performance-recovery
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Rebuild exact 187 lost-SKU set from previous 1000 artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/puma-prev /tmp/puma-187
+          mkdir -p /tmp/puma-prev /tmp/puma-187
+          gh run download 35440239803 \
+            --repo RizOne11/RizWeb_0.2 \
+            --name puma-1000-performance-recovery-35440239803 \
+            --dir /tmp/puma-prev
+          python - <<'PY'
+          import csv, json
+          from pathlib import Path
+
+          root=Path("/tmp/puma-prev")
+          discovery=json.loads((root/"puma-1000-discovery-summary.json").read_text(encoding="utf-8"))
+          refresh=json.loads((root/"puma-1000-refresh-summary.json").read_text(encoding="utf-8"))
+
+          def key(p):
+              return (str(p.get("article","")).strip(), str(p.get("name","")).strip())
+
+          rmap={key(p):p for p in refresh["product_results"]}
+          lost=[]
+          for p in discovery["product_results"]:
+              old_found=p.get("status")=="FOUND" and int(p.get("offers") or 0)>0
+              rp=rmap[key(p)]
+              refresh_found=rp.get("status")=="FOUND" and int(rp.get("offers") or 0)>0
+              if old_found and not refresh_found:
+                  lost.append(p)
+
+          assert len(lost)==187, f"expected 187 lost SKU, got {len(lost)}"
+          out=Path("/tmp/puma-187/lost187.csv")
+          fields=["index","article","name","brand","model","own_price","category","supplier","old_price","discount"]
+          with out.open("w",encoding="utf-8-sig",newline="") as fh:
+              w=csv.DictWriter(fh,fieldnames=fields)
+              w.writeheader()
+              for i,p in enumerate(lost,1):
+                  w.writerow({
+                      "index":i,
+                      "article":p.get("article",""),
+                      "name":p.get("name",""),
+                      "brand":p.get("brand",""),
+                      "model":p.get("model",""),
+                      "own_price":p.get("own_price",""),
+                      "category":p.get("category",""),
+                      "supplier":p.get("supplier",""),
+                      "old_price":p.get("old_price",""),
+                      "discount":p.get("discount",""),
+                  })
+          print("PUMA187_INPUT_PRODUCTS=187", flush=True)
+          PY
+
+      - name: Discovery then repaired Fast Refresh on exact lost 187
+        run: |
+          set -euo pipefail
+          if [ -z "${SERPER_API_KEY:-}" ]; then
+            echo "SERPER_REQUIRED_BUT_NOT_CONFIGURED"
+            exit 42
+          fi
+          rm -f /tmp/puma-187-repair-cache.sqlite*
+          python - <<'PY'
+          import json, os, time
+          from pathlib import Path
+          from puma_scouts.production import run_sync, PRODUCT_CONCURRENCY
+
+          input_path="/tmp/puma-187/lost187.csv"
+          selected=["prom","epicentr","hotline","web_shops"]
+
+          def run_pass(label, refresh_only):
+              if refresh_only:
+                  os.environ["PUMA_REFRESH_ONLY"]="1"
+              else:
+                  os.environ.pop("PUMA_REFRESH_ONLY",None)
+
+              report=f"/tmp/puma-187/{label.lower()}.xlsx"
+              classic=f"/tmp/puma-187/{label.lower()}_classic.xlsx"
+              started=time.monotonic()
+              summary=run_sync(
+                  input_path,
+                  report,
+                  limit=187,
+                  selected=selected,
+                  classic_output_path=classic,
+                  supplier="recovery-187",
+              )
+              summary["wall_seconds"]=round(time.monotonic()-started,2)
+              Path(f"/tmp/puma-187/{label.lower()}_summary.json").write_text(
+                  json.dumps(summary,ensure_ascii=False,indent=2),
+                  encoding="utf-8",
+              )
+              print(f"PUMA187_{label}_SECONDS={summary['wall_seconds']}",flush=True)
+              print(f"PUMA187_{label}_FOUND={summary.get('found_products')}/187",flush=True)
+              print(f"PUMA187_{label}_OFFERS={summary.get('offers')}",flush=True)
+              print(f"PUMA187_{label}_CONFIRMED={summary.get('confirmed')}",flush=True)
+              print(f"PUMA187_{label}_PROBABLE={summary.get('probable')}",flush=True)
+              print(f"PUMA187_{label}_SERPER={summary.get('serper_api_requests')}",flush=True)
+              print(f"PUMA187_{label}_REPAIR_ATTEMPTED={summary.get('repair_products_attempted')}",flush=True)
+              print(f"PUMA187_{label}_REPAIR_RESCUED={summary.get('repair_products_rescued')}",flush=True)
+              return summary
+
+          discovery=run_pass("DISCOVERY",False)
+          refresh=run_pass("REFRESH",True)
+
+          comparison={
+              "products":187,
+              "discovery_found":discovery.get("found_products"),
+              "refresh_found":refresh.get("found_products"),
+              "found_delta":int(refresh.get("found_products") or 0)-int(discovery.get("found_products") or 0),
+              "discovery_seconds":discovery.get("wall_seconds"),
+              "refresh_seconds":refresh.get("wall_seconds"),
+              "speedup":round(
+                  float(discovery.get("wall_seconds") or 0)
+                  /max(0.01,float(refresh.get("wall_seconds") or 0)),2
+              ),
+              "discovery_offers":discovery.get("offers"),
+              "refresh_offers":refresh.get("offers"),
+              "refresh_repair_attempted":refresh.get("repair_products_attempted"),
+              "refresh_repair_rescued":refresh.get("repair_products_rescued"),
+              "discovery_serper_requests":discovery.get("serper_api_requests"),
+              "refresh_serper_requests":refresh.get("serper_api_requests"),
+              "refresh_coverage":refresh.get("coverage_by_source"),
+              "refresh_source_discovery":refresh.get("source_discovery"),
+              "product_concurrency":PRODUCT_CONCURRENCY,
+          }
+          Path("/tmp/puma-187/comparison.json").write_text(
+              json.dumps(comparison,ensure_ascii=False,indent=2),encoding="utf-8"
+          )
+          print("PUMA187_COMPARISON="+json.dumps(comparison,ensure_ascii=False),flush=True)
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: puma-recovery-187-${{ github.run_id }}
+          retention-days: 7
+          path: |
+            /tmp/puma-187/lost187.csv
+            /tmp/puma-187/discovery_summary.json
+            /tmp/puma-187/refresh_summary.json
+            /tmp/puma-187/comparison.json
+            /tmp/puma-187/discovery.xlsx
+            /tmp/puma-187/discovery_classic.xlsx
+            /tmp/puma-187/refresh.xlsx
+            /tmp/puma-187/refresh_classic.xlsx
+          if-no-files-found: warn
