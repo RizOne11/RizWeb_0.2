@@ -41,6 +41,7 @@ jobs:
           rm -f /tmp/puma-repair-benchmark-cache.sqlite /tmp/puma-repair-benchmark-cache.sqlite-wal /tmp/puma-repair-benchmark-cache.sqlite-shm
           echo "SERPER_CONFIGURED=1"
           echo "REPAIR_BENCHMARK_CACHE_FRESH=1"
+          echo "REPAIR_BENCHMARK_ARTICLE_PRESERVED=1"
 
       - name: Rebuild identical 100-product catalog
         run: |
@@ -60,6 +61,7 @@ jobs:
           offers = ET.SubElement(shop, "offers")
           for i, p in enumerate(products[:100], 1):
               offer = ET.SubElement(offers, "offer", id=str(p.get("article") or f"ROW-{i}"))
+              ET.SubElement(offer, "article").text = str(p.get("article") or f"ROW-{i}")
               fields = {
                   "name": p.get("name"),
                   "vendor": p.get("brand"),
@@ -94,6 +96,7 @@ jobs:
               offers=ET.SubElement(shop,"offers")
               for i,p in enumerate(products,1):
                   offer=ET.SubElement(offers,"offer",id=str(p.get("article") or f"ROW-{i}"))
+                  ET.SubElement(offer,"article").text=str(p.get("article") or f"ROW-{i}")
                   fields={
                       "name":p.get("name"),"vendor":p.get("brand"),"model":p.get("model"),
                       "price":p.get("own_price"),"category":p.get("category"),
