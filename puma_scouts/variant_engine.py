@@ -193,27 +193,42 @@ def _structured_numeric_codes(text: str) -> set[str]:
     return {m.casefold() for m in re.findall(r"(?<!\d)\d{2,3}-\d{3,5}(?!\d)", str(text or ""))}
 
 
-def _terminal_parenthetical_code(text: str) -> str | None:
-    """Return a compact terminal variant marker such as (49), (002-279) or (TC1N 5887)."""
-    match = re.search(r"\(([^()]{1,24})\)\s*$", str(text or "").strip(), re.I)
-    if not match:
-        return None
-    raw = match.group(1).strip().casefold()
-    compact = re.sub(r"[^a-zа-яіїє0-9]", "", raw, flags=re.I)
-    if not compact or not re.search(r"\d", compact):
-        return None
-    if re.fullmatch(r"(?:19|20)\d{2}", compact):
-        return None
-    if len(compact) > 20:
-        return None
-    return compact
+def _parenthetical_variant_codes(text: str) -> set[str]:
+    """Extract code-like variant markers published in parentheses.
+
+    Keep true product identifiers such as (49), (002-279), (TC1N 5887) and
+    reject years, quantities and measurement notes.
+    """
+    out = set()
+    units = re.compile(
+        r"\b(?:шт|штук|pcs|pieces|pack|уп|упак|mm|мм|cm|см|ml|мл|kg|кг|gb|гб|tb|тб|w|вт|v|в|hz|гц)\b",
+        re.I,
+    )
+    for value in re.findall(r"\(([^()]{1,24})\)", str(text or ""), re.I):
+        raw = value.strip().casefold()
+        if units.search(raw):
+            continue
+        compact = re.sub(r"[^a-zа-яіїє0-9]", "", raw, flags=re.I)
+        if not compact or not re.search(r"\d", compact) or len(compact) > 20:
+            continue
+        if re.fullmatch(r"(?:19|20)\d{2}", compact):
+            continue
+        if re.fullmatch(r"\d{1,3}", compact):
+            out.add(compact)
+            continue
+        if re.fullmatch(r"\d{2,3}\s*-\s*\d{3,5}", raw):
+            out.add(compact)
+            continue
+        if re.search(r"[a-zа-яіїє]", compact, re.I) and len(re.findall(r"\d", compact)) >= 1:
+            out.add(compact)
+    return out
 
 
 def _terminal_variant_conflict(expected_text: str, candidate_text: str) -> str | None:
-    expected = _terminal_parenthetical_code(expected_text)
-    candidate = _terminal_parenthetical_code(candidate_text)
-    if expected and candidate and expected != candidate:
-        return f"terminal variant mismatch: expected {expected}, got {candidate}"
+    expected = _parenthetical_variant_codes(expected_text)
+    candidate = _parenthetical_variant_codes(candidate_text)
+    if expected and candidate and expected.isdisjoint(candidate):
+        return f"terminal variant mismatch: expected {sorted(expected)}, got {sorted(candidate)}"
     return None
 
 
@@ -225,11 +240,10 @@ def _public_code_conflict(expected_text: str, candidate_text: str) -> str | None
     if expected_codes & candidate_codes:
         return None
 
-    terminal_expected = _terminal_parenthetical_code(expected_text)
-    terminal_expected_compact = re.sub(r"[^0-9]", "", terminal_expected or "")
+    parenthetical_expected = _parenthetical_variant_codes(expected_text)
     for expected in expected_codes:
-        expected_compact = re.sub(r"[^0-9]", "", expected)
-        if terminal_expected and terminal_expected_compact == expected_compact:
+        expected_compact = re.sub(r"[^a-zа-яіїє0-9]", "", expected, flags=re.I)
+        if expected_compact in parenthetical_expected:
             candidate = sorted(candidate_codes)[0]
             return f"public article mismatch: expected {expected}, got {candidate}"
 
