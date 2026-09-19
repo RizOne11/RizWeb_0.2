@@ -19,6 +19,7 @@ jobs:
       PUMA_IDENTITY_CACHE_SECONDS: "2592000"
       PUMA_REFRESH_URL_LIMIT: "1"
       PUMA_REFRESH_WEB_URL_LIMIT: "3"
+      PUMA_IDENTITY_SAVE_PROBABLE: "1"
       SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
 
     steps:
@@ -42,6 +43,7 @@ jobs:
           echo "SERPER_CONFIGURED=1"
           echo "REPAIR_BENCHMARK_CACHE_FRESH=1"
           echo "REPAIR_BENCHMARK_ARTICLE_PRESERVED=1"
+          echo "PROBABLE_IDENTITY_ENABLED=1"
 
       - name: Rebuild identical 100-product catalog
         run: |
