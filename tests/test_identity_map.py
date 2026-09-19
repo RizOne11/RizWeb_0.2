@@ -231,3 +231,89 @@ def test_refresh_only_without_identity_is_discovery_gap(monkeypatch):
     assert report.metrics["repair_required"] is False
     assert report.metrics["discovery_gap"] is True
     assert report.metrics["identity_urls_loaded"] == 0
+
+
+
+def test_supplier_sku_key_stays_stable_but_identity_version_changes():
+    original = ProductMission(
+        article="SKU-42",
+        source_data={
+            "supplier": "Hubber",
+            "name": "Honda EU35i",
+            "brand": "Honda",
+            "model": "EU35i",
+        },
+    )
+    renamed = ProductMission(
+        article="SKU-42",
+        source_data={
+            "supplier": "Hubber",
+            "name": "Honda EU35i updated title",
+            "brand": "Honda",
+            "model": "EU35i",
+        },
+    )
+
+    assert identity_map.mission_identity_key(original) == identity_map.mission_identity_key(renamed)
+    assert identity_map.mission_identity_version(original) != identity_map.mission_identity_version(renamed)
+
+
+def test_probable_identity_is_optional_and_keeps_confidence(tmp_path, monkeypatch):
+    cache = Cache(str(tmp_path / "identity-probable.sqlite"))
+    monkeypatch.setattr(identity_map, "runtime_cache", lambda: cache)
+    monkeypatch.setattr(identity_map, "identity_cache_seconds", lambda: 3600)
+
+    mission = ProductMission(
+        article="SKU-99",
+        source_data={
+            "supplier": "Hubber",
+            "name": "Honda EU35i",
+            "brand": "Honda",
+            "model": "EU35i",
+        },
+    )
+    probable = ValidatedOffer(
+        offer=_offer(),
+        verdict=Verdict.PASS,
+        score=0.78,
+        identity_confidence=IdentityConfidence.PROBABLE,
+    )
+
+    monkeypatch.delenv("PUMA_IDENTITY_SAVE_PROBABLE", raising=False)
+    assert identity_map.remember_confirmed_identities(mission, "web_shops", [probable]) == 0
+
+    monkeypatch.setenv("PUMA_IDENTITY_SAVE_PROBABLE", "1")
+    assert identity_map.remember_confirmed_identities(mission, "web_shops", [probable]) == 1
+    rows = cache.get_identities(
+        identity_map.mission_identity_key(mission),
+        "web_shops",
+        3600,
+        10,
+        identity_version=identity_map.mission_identity_version(mission),
+    )
+    assert rows[0]["confidence"] == "PROBABLE"
+    assert identity_map.load_identity_urls(mission, "web_shops") == [
+        "https://shop.example.ua/honda-eu35i"
+    ]
+
+
+def test_identity_rows_rank_confirmed_before_probable(tmp_path):
+    cache = Cache(str(tmp_path / "identity-rank.sqlite"))
+    key = "k"
+    version = "v"
+    cache.put_identity(
+        key,
+        "prom",
+        "https://prom.ua/p-probable.html",
+        confidence="PROBABLE",
+        identity_version=version,
+    )
+    cache.put_identity(
+        key,
+        "prom",
+        "https://prom.ua/p-confirmed.html",
+        confidence="CONFIRMED",
+        identity_version=version,
+    )
+    rows = cache.get_identities(key, "prom", 3600, 10, identity_version=version)
+    assert [row["confidence"] for row in rows[:2]] == ["CONFIRMED", "PROBABLE"]
