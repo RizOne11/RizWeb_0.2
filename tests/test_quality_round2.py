@@ -89,3 +89,68 @@ def test_xon_ukrainian_candidate_with_same_physical_identity_passes():
 
     assert checked.verdict == Verdict.PASS, checked
     assert checked.identity_confidence in {IdentityConfidence.CONFIRMED, IdentityConfidence.PROBABLE}, checked
+
+
+def test_terminal_numeric_variant_mismatch_rejects_neighboring_artwork():
+    mission = ProductMission(
+        article="49_xl",
+        source_data={
+            "name": "Картина KIL Art Винил 122x81 см (49)",
+            "brand": "KIL Art",
+        },
+    )
+    checked = validate_offer(
+        mission,
+        _offer(
+            mission,
+            "Картина на холсте KIL Art Лесной водопад 122x81 см (322)",
+            marketplace=Marketplace.EPICENTR,
+            attrs={"brand": "KIL Art"},
+            price=4145,
+        ),
+    )
+    assert checked.verdict != Verdict.PASS, checked
+    assert any("terminal variant mismatch" in x for x in checked.conflicts), checked
+
+
+def test_terminal_variant_same_code_is_not_rejected():
+    mission = ProductMission(
+        article="49_xl",
+        source_data={
+            "name": "Картина KIL Art Винил 122x81 см (49)",
+            "brand": "KIL Art",
+        },
+    )
+    checked = validate_offer(
+        mission,
+        _offer(
+            mission,
+            "Картина KIL Art Винил 122x81 см (49)",
+            marketplace=Marketplace.PROM,
+            attrs={"brand": "KIL Art"},
+            price=4145,
+        ),
+    )
+    assert not any("terminal variant mismatch" in x for x in checked.conflicts), checked
+
+
+def test_terminal_public_code_rejects_wrong_luckylook_model():
+    mission = ProductMission(
+        article="2000000002279",
+        source_data={
+            "name": "Солнцезащитные очки женские LuckyLOOK Китти Серый (002-279)",
+            "brand": "LuckyLOOK",
+        },
+    )
+    checked = validate_offer(
+        mission,
+        _offer(
+            mission,
+            "Солнцезащитные очки LuckyLOOK Круглые женские Серый 849-525 D15-2026",
+            marketplace=Marketplace.PROM,
+            attrs={"brand": "LuckyLOOK"},
+            price=1295,
+        ),
+    )
+    assert checked.verdict != Verdict.PASS, checked
+    assert any("public article mismatch" in x for x in checked.conflicts), checked

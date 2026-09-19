@@ -131,3 +131,52 @@ def test_refresh_does_not_repair_without_prior_discovery_state(tmp_path, monkeyp
     assert calls == [False]
     assert summary["found_products"] == 0
     assert summary["repair_products_attempted"] == 0
+
+
+def test_refresh_repairs_missing_prior_source_even_when_product_found_elsewhere(tmp_path, monkeypatch):
+    catalog = tmp_path / "catalog.yml"
+    output = tmp_path / "report.xlsx"
+    _catalog(catalog)
+    calls = []
+
+    async def fake_scan(mission, selected=None, scout_pool=None, force_discovery=False):
+        calls.append((tuple(selected or ()), force_discovery))
+        if force_discovery:
+            return [_row(mission, "epicentr")], {
+                "epicentr": {
+                    "health": "FOUND",
+                    "elapsed_seconds": 0.1,
+                    "errors": [],
+                    "metrics": {},
+                }
+            }
+        return [_row(mission, "prom")], {
+            "prom": {
+                "health": "FOUND",
+                "elapsed_seconds": 0.1,
+                "errors": [],
+                "metrics": {"identity_refresh_hit": True},
+            },
+            "epicentr": {
+                "health": "NOT_FOUND",
+                "elapsed_seconds": 0.1,
+                "errors": [],
+                "metrics": {"discovery_gap": True},
+            },
+        }
+
+    monkeypatch.setenv("PUMA_REFRESH_ONLY", "1")
+    monkeypatch.setenv("PUMA_REFRESH_REPAIR_ENABLED", "1")
+    monkeypatch.setattr(production, "scan_detailed", fake_scan)
+    monkeypatch.setattr(production, "scouts", lambda selected=None: [])
+    monkeypatch.setattr(production, "load_discovery_sources", lambda mission: ["prom", "epicentr"])
+    monkeypatch.setattr(production, "PRODUCT_CONCURRENCY", 1)
+
+    summary = asyncio.run(production.run(str(catalog), str(output)))
+
+    assert calls == [((), False), (("epicentr",), True)]
+    assert summary["found_products"] == 1
+    product = summary["product_results"][0]
+    assert set(x["source"] for x in product["offers_detail"]) == {"prom", "epicentr"}
+    assert summary["repair_products_attempted"] == 1
+    assert summary["repair_products_rescued"] == 1

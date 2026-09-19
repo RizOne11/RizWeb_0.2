@@ -193,14 +193,47 @@ def _structured_numeric_codes(text: str) -> set[str]:
     return {m.casefold() for m in re.findall(r"(?<!\d)\d{2,3}-\d{3,5}(?!\d)", str(text or ""))}
 
 
+def _terminal_parenthetical_code(text: str) -> str | None:
+    """Return a compact terminal variant marker such as (49), (002-279) or (TC1N 5887)."""
+    match = re.search(r"\(([^()]{1,24})\)\s*$", str(text or "").strip(), re.I)
+    if not match:
+        return None
+    raw = match.group(1).strip().casefold()
+    compact = re.sub(r"[^a-zа-яіїє0-9]", "", raw, flags=re.I)
+    if not compact or not re.search(r"\d", compact):
+        return None
+    if re.fullmatch(r"(?:19|20)\d{2}", compact):
+        return None
+    if len(compact) > 20:
+        return None
+    return compact
+
+
+def _terminal_variant_conflict(expected_text: str, candidate_text: str) -> str | None:
+    expected = _terminal_parenthetical_code(expected_text)
+    candidate = _terminal_parenthetical_code(candidate_text)
+    if expected and candidate and expected != candidate:
+        return f"terminal variant mismatch: expected {expected}, got {candidate}"
+    return None
+
+
 def _public_code_conflict(expected_text: str, candidate_text: str) -> str | None:
     expected_codes = _structured_numeric_codes(expected_text)
     candidate_codes = _structured_numeric_codes(candidate_text)
     if not expected_codes or not candidate_codes:
         return None
+    if expected_codes & candidate_codes:
+        return None
+
+    terminal_expected = _terminal_parenthetical_code(expected_text)
+    terminal_expected_compact = re.sub(r"[^0-9]", "", terminal_expected or "")
     for expected in expected_codes:
-        if expected in candidate_codes:
-            continue
+        expected_compact = re.sub(r"[^0-9]", "", expected)
+        if terminal_expected and terminal_expected_compact == expected_compact:
+            candidate = sorted(candidate_codes)[0]
+            return f"public article mismatch: expected {expected}, got {candidate}"
+
+    for expected in expected_codes:
         expected_parts = expected.split("-", 1)
         for candidate in candidate_codes:
             candidate_parts = candidate.split("-", 1)
@@ -238,6 +271,8 @@ def generation_confirmation(expected_text:str,candidate_text:str)->tuple[bool,st
 
 def identity_conflicts(expected_text:str,candidate_text:str)->list[str]:
     expected,candidate=signature(expected_text),signature(candidate_text);out=[];part_entities={"spare_part","accessory","component"}
+    terminal_problem=_terminal_variant_conflict(expected_text,candidate_text)
+    if terminal_problem:out.append(terminal_problem)
     public_code_problem=_public_code_conflict(expected_text,candidate_text)
     if public_code_problem:out.append(public_code_problem)
     model_problem=_explicit_model_conflict(expected_text,candidate_text)

@@ -336,11 +336,15 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
             found,diag=await scan_detailed(m,selected,scout_pool=scout_pool)
             if not refresh_mode:
                 remember_discovery_sources(m,{x.get("source","") for x in found if x.get("source")})
-            elif repair_enabled and not found:
+            elif repair_enabled:
                 prior_sources=load_discovery_sources(m)
                 if prior_sources:
                     allowed=set(selected or prior_sources)
-                    repair_targets=[src for src in prior_sources if src in allowed]
+                    current_sources={x.get("source","") for x in found if x.get("source")}
+                    repair_targets=[
+                        src for src in prior_sources
+                        if src in allowed and src not in current_sources
+                    ]
                     if repair_targets:
                         repair_found,repair_diag=await scan_detailed(
                             m,repair_targets,scout_pool=scout_pool,force_discovery=True
@@ -353,6 +357,7 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
                             after_metrics=dict(after.get("metrics") or {})
                             after_metrics["product_repair_attempted"]=True
                             after_metrics["product_repair_rescued"]=src in repair_sources
+                            after_metrics["source_gap_repair"]=bool(found)
                             after_metrics["refresh_identity_urls_loaded_before_repair"]=int(
                                 before_metrics.get("identity_urls_loaded") or 0
                             )
@@ -373,7 +378,7 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
                             )
                             diag[src]=after
                         if repair_found:
-                            found=repair_found
+                            found.extend(repair_found)
             async with lock:
                 completed_state[index]={"article":m.article,"found":found,"diagnostics":diag}
                 _save_checkpoint(checkpoint_path,checkpoint_token,missions,completed_state)
