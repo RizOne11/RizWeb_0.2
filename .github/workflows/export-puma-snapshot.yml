@@ -1,0 +1,28 @@
+name: Export PUMA branch snapshot
+
+on:
+  push:
+    branches: [puma-export-3aebbf23]
+    paths:
+      - '.export-trigger'
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 3aebbf238235dec24a2f554d23f13fb9ce8800e8
+      - name: Record snapshot metadata
+        run: |
+          printf "branch=puma-performance-recovery\ncommit=3aebbf238235dec24a2f554d23f13fb9ce8800e8\n" > PUMA_SNAPSHOT.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PUMA_puma-performance-recovery_3aebbf23
+          retention-days: 7
+          include-hidden-files: false
+          path: |
+            .
+          if-no-files-found: error
