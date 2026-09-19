@@ -1,0 +1,157 @@
+name: PUMA 1000 Final Quality Gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [puma-performance-recovery]
+    paths:
+      - 'benchmarks/.trigger-puma-1000-final'
+
+concurrency:
+  group: puma-1000-final-quality
+  cancel-in-progress: false
+
+jobs:
+  final1000:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      PYTHONPATH: .
+      PUMA_SOURCE_WALL_TIMEOUT: "70"
+      PUMA_SOURCE_HARD_TIMEOUT: "140"
+      PUMA_PRODUCT_CONCURRENCY: "4"
+      PUMA_RUNTIME_CACHE_ENABLED: "1"
+      PUMA_RUNTIME_CACHE_PATH: "/tmp/puma-1000-final.sqlite"
+      PUMA_SERPER_CACHE_SECONDS: "2592000"
+      PUMA_IDENTITY_CACHE_SECONDS: "2592000"
+      PUMA_REFRESH_URL_LIMIT: "3"
+      PUMA_REFRESH_WEB_URL_LIMIT: "3"
+      PUMA_REPAIR_QUERY_LIMIT: "1"
+      PUMA_IDENTITY_SAVE_PROBABLE: "1"
+      PUMA_REFRESH_REPAIR_ENABLED: "1"
+      SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: puma-performance-recovery
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+
+      - name: Verify 1000-SKU input
+        run: |
+          set -euo pipefail
+          test -n "${SERPER_API_KEY:-}"
+          rm -f /tmp/puma-1000-final.sqlite*
+          python - <<'PY'
+          from puma_scouts.production import read_missions
+          missions=read_missions("benchmarks/PUMA_random_1000_compact_20260919.csv",limit=1000)
+          assert len(missions)==1000
+          assert len({m.article for m in missions})==1000
+          print("PUMA1000_FINAL_INPUT=1000",flush=True)
+          PY
+
+      - name: Full Discovery and candidate-hint Fast Refresh
+        run: |
+          python - <<'PY'
+          import json, os, time
+          from pathlib import Path
+          from puma_scouts.production import run_sync, PRODUCT_CONCURRENCY
+
+          inp="benchmarks/PUMA_random_1000_compact_20260919.csv"
+          sources=["prom","epicentr","hotline","web_shops"]
+
+          def run_pass(label,refresh):
+              if refresh:
+                  os.environ["PUMA_REFRESH_ONLY"]="1"
+              else:
+                  os.environ.pop("PUMA_REFRESH_ONLY",None)
+              started=time.monotonic()
+              summary=run_sync(
+                  inp,
+                  f"/tmp/final_{label.lower()}.xlsx",
+                  limit=1000,
+                  selected=sources,
+                  classic_output_path=f"/tmp/final_{label.lower()}_classic.xlsx",
+                  supplier="final-1000-quality",
+              )
+              summary["wall_seconds"]=round(time.monotonic()-started,2)
+              Path(f"/tmp/final_{label.lower()}.json").write_text(
+                  json.dumps(summary,ensure_ascii=False,indent=2),encoding="utf-8"
+              )
+              hint_hits=sum(
+                  int((b or {}).get("candidate_hint_refresh_hits") or 0)
+                  for b in (summary.get("source_discovery") or {}).values()
+              )
+              print(f"PUMA1000_FINAL_{label}_FOUND={summary.get('found_products')}/1000",flush=True)
+              print(f"PUMA1000_FINAL_{label}_OFFERS={summary.get('offers')}",flush=True)
+              print(f"PUMA1000_FINAL_{label}_SECONDS={summary.get('wall_seconds')}",flush=True)
+              print(f"PUMA1000_FINAL_{label}_SERPER={summary.get('serper_api_requests')}",flush=True)
+              print(f"PUMA1000_FINAL_{label}_REPAIR_ATTEMPTED={summary.get('repair_products_attempted')}",flush=True)
+              print(f"PUMA1000_FINAL_{label}_REPAIR_RESCUED={summary.get('repair_products_rescued')}",flush=True)
+              print(f"PUMA1000_FINAL_{label}_HINT_HITS={hint_hits}",flush=True)
+              print(f"PUMA1000_FINAL_{label}_COVERAGE="+json.dumps(summary.get("coverage_by_source",{}),ensure_ascii=False),flush=True)
+              return summary
+
+          d=run_pass("DISCOVERY",False)
+          r=run_pass("REFRESH",True)
+
+          dmap={p["article"]:p for p in d["product_results"]}
+          rmap={p["article"]:p for p in r["product_results"]}
+          lost=[]
+          source_gaps=[]
+          for sku,p in dmap.items():
+              rp=rmap[sku]
+              if p["status"]=="FOUND" and rp["status"]!="FOUND":
+                  lost.append({"article":sku,"name":p["name"]})
+              ds={o["source"] for o in p.get("offers_detail",[])}
+              rs={o["source"] for o in rp.get("offers_detail",[])}
+              if ds-rs:
+                  source_gaps.append({"article":sku,"missing":sorted(ds-rs)})
+
+          ds=float(d.get("wall_seconds") or 0)
+          rs=float(r.get("wall_seconds") or 0)
+          comparison={
+              "products":1000,
+              "discovery_found":d.get("found_products"),
+              "refresh_found":r.get("found_products"),
+              "found_delta":int(r.get("found_products") or 0)-int(d.get("found_products") or 0),
+              "lost_products":lost,
+              "lost_product_count":len(lost),
+              "remaining_source_gaps":source_gaps,
+              "source_gap_count":len(source_gaps),
+              "discovery_offers":d.get("offers"),
+              "refresh_offers":r.get("offers"),
+              "discovery_seconds":ds,
+              "refresh_seconds":rs,
+              "speedup":round(ds/max(.01,rs),2),
+              "discovery_serper":d.get("serper_api_requests"),
+              "refresh_serper":r.get("serper_api_requests"),
+              "repair_attempted":r.get("repair_products_attempted"),
+              "repair_rescued":r.get("repair_products_rescued"),
+              "discovery_coverage":d.get("coverage_by_source"),
+              "refresh_coverage":r.get("coverage_by_source"),
+              "product_concurrency":PRODUCT_CONCURRENCY,
+          }
+          Path("/tmp/final_comparison.json").write_text(
+              json.dumps(comparison,ensure_ascii=False,indent=2),encoding="utf-8"
+          )
+          print("PUMA1000_FINAL_COMPARISON="+json.dumps(comparison,ensure_ascii=False),flush=True)
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: puma-1000-final-${{ github.run_id }}
+          retention-days: 7
+          path: |
+            /tmp/final_discovery.json
+            /tmp/final_refresh.json
+            /tmp/final_comparison.json
+            /tmp/final_discovery.xlsx
+            /tmp/final_refresh.xlsx
+            /tmp/final_discovery_classic.xlsx
+            /tmp/final_refresh_classic.xlsx
+          if-no-files-found: warn
