@@ -2,6 +2,10 @@ name: PUMA Recovery 187 Lost SKU
 
 on:
   workflow_dispatch:
+  push:
+    branches: [puma-performance-recovery]
+    paths:
+      - 'benchmarks/.trigger-puma-recovery-187'
 
 concurrency:
   group: puma-recovery-187-lost
