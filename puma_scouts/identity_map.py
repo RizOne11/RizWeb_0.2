@@ -99,6 +99,96 @@ def load_discovery_sources(mission: ProductMission) -> list[str] | None:
     return list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
 
 
+def _candidate_hint_key(mission: ProductMission, source: str) -> str:
+    return (
+        "puma:candidate-hints:v1:"
+        + mission_identity_key(mission)
+        + ":"
+        + mission_identity_version(mission)
+        + ":"
+        + str(source or "").strip().casefold()
+    )
+
+
+def remember_candidate_hints(
+    mission: ProductMission,
+    source: str,
+    validated: Iterable[ValidatedOffer],
+    *,
+    limit: int = 6,
+) -> int:
+    """Persist untrusted PASS/PROBABLE URLs for cheap revalidation.
+
+    Candidate hints are deliberately separate from the Identity Map. They are
+    never trusted as identity and must pass the full validator again on refresh.
+    """
+    cache = runtime_cache()
+    if not cache:
+        return 0
+    candidates = []
+    for item in validated:
+        if (
+            item.verdict == Verdict.PASS
+            and item.identity_confidence == IdentityConfidence.PROBABLE
+            and item.offer.price is not None
+        ):
+            url = str(item.offer.url or "").strip()
+            if url:
+                candidates.append((float(item.score or 0), url))
+    urls = []
+    seen = set()
+    for _, url in sorted(candidates, key=lambda pair: pair[0], reverse=True):
+        if url in seen:
+            continue
+        seen.add(url)
+        urls.append(url)
+        if len(urls) >= max(1, int(limit)):
+            break
+    try:
+        cache.put_search(
+            _candidate_hint_key(mission, source),
+            json.dumps({"urls": urls}, ensure_ascii=False, separators=(",", ":")),
+        )
+        return len(urls)
+    except Exception:
+        return 0
+
+
+def load_candidate_hint_urls(
+    mission: ProductMission,
+    source: str,
+    *,
+    limit: int = 6,
+) -> list[str]:
+    cache = runtime_cache()
+    ttl = identity_cache_seconds()
+    if not cache or ttl <= 0:
+        return []
+    try:
+        raw = cache.get_search(_candidate_hint_key(mission, source), ttl)
+    except Exception:
+        return []
+    if raw is None:
+        return []
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    values = payload.get("urls") if isinstance(payload, dict) else None
+    if not isinstance(values, list):
+        return []
+    urls = []
+    seen = set()
+    for value in values:
+        url = str(value or "").strip()
+        if url and url not in seen:
+            seen.add(url)
+            urls.append(url)
+        if len(urls) >= max(1, int(limit)):
+            break
+    return urls
+
+
 def load_identity_urls(mission: ProductMission, source: str, *, limit: int = 24) -> list[str]:
     cache = runtime_cache()
     ttl = identity_cache_seconds()

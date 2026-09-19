@@ -11,7 +11,12 @@ from urllib.parse import quote_plus, urljoin, urlsplit, urlunsplit
 import httpx
 from bs4 import BeautifulSoup
 
-from puma_scouts.identity_map import load_identity_urls, remember_confirmed_identities
+from puma_scouts.identity_map import (
+    load_candidate_hint_urls,
+    load_identity_urls,
+    remember_candidate_hints,
+    remember_confirmed_identities,
+)
 from puma_scouts.models import Marketplace, Offer, ProductMission, ScanHealth, ScanReport, Verdict
 from puma_scouts.query import generate_queries
 from puma_scouts.scouts.base import MarketplaceScout
@@ -255,6 +260,9 @@ class EpicentrScout(MarketplaceScout):
             "identity_urls_loaded": 0,
             "identity_refresh_hit": False,
             "identity_urls_saved": 0,
+            "candidate_hint_urls_loaded": 0,
+            "candidate_hint_refresh_hit": False,
+            "candidate_hint_urls_saved": 0,
             "serper_queries_attempted": 0,
             "serper_api_requests": 0,
             "serper_cache_hits": 0,
@@ -303,8 +311,50 @@ class EpicentrScout(MarketplaceScout):
                 )
             unique.clear()
 
+        hint_urls = []
         if self.refresh_only():
-            if known_urls:
+            hint_urls = [
+                url for url in load_candidate_hint_urls(mission, source_name, limit=6)
+                if url not in set(known_urls)
+            ]
+            metrics["candidate_hint_urls_loaded"] = len(hint_urls)
+            if hint_urls:
+                hint_offers = await self._fetch_offers(
+                    client, mission, "candidate-hint", hint_urls, "candidate-hint", errors=errors
+                )
+                for offer in hint_offers:
+                    unique.setdefault(str(offer.url), offer)
+                hint_validated = [validate_offer(mission, offer) for offer in unique.values()]
+                hint_price_passes = [
+                    item for item in hint_validated
+                    if item.verdict == Verdict.PASS and item.offer.price is not None
+                ]
+                if hint_price_passes:
+                    metrics["candidate_hint_refresh_hit"] = True
+                    metrics["identity_urls_saved"] += remember_confirmed_identities(
+                        mission, source_name, hint_validated
+                    )
+                    metrics["candidate_hint_urls_saved"] = remember_candidate_hints(
+                        mission, source_name, hint_validated
+                    )
+                    return ScanReport(
+                        article=mission.article,
+                        marketplace=self.marketplace,
+                        health=ScanHealth.FOUND,
+                        queries_generated=0,
+                        pages_scanned=len(unique),
+                        candidates_seen=len(known_urls) + len(hint_urls),
+                        candidates_collected=len(unique),
+                        duplicates_removed=max(0, len(hint_urls) - len(unique)),
+                        search_rounds=0,
+                        errors=errors,
+                        offers=hint_validated,
+                        metrics=metrics,
+                    )
+                unique.clear()
+
+        if self.refresh_only():
+            if known_urls or hint_urls:
                 metrics["repair_required"] = True
             else:
                 metrics["discovery_gap"] = True
@@ -314,7 +364,7 @@ class EpicentrScout(MarketplaceScout):
                 health=ScanHealth.NOT_FOUND,
                 queries_generated=0,
                 pages_scanned=0,
-                candidates_seen=metrics["identity_urls_attempted"],
+                candidates_seen=metrics["identity_urls_attempted"] + metrics["candidate_hint_urls_loaded"],
                 candidates_collected=0,
                 duplicates_removed=0,
                 search_rounds=0,
@@ -386,6 +436,9 @@ class EpicentrScout(MarketplaceScout):
         passes = [item for item in validated if item.verdict == Verdict.PASS]
         conflicts = [item for item in validated if item.verdict == Verdict.CONFLICT]
         metrics["identity_urls_saved"] = remember_confirmed_identities(
+            mission, source_name, validated
+        )
+        metrics["candidate_hint_urls_saved"] = remember_candidate_hints(
             mission, source_name, validated
         )
         health = (

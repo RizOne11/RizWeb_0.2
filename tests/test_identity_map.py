@@ -371,3 +371,72 @@ def test_discovery_source_state_round_trip_and_known_empty(tmp_path, monkeypatch
     )
     assert identity_map.remember_discovery_sources(missed, set()) is True
     assert identity_map.load_discovery_sources(missed) == []
+
+
+def test_unsafe_probable_is_candidate_hint_not_identity(tmp_path, monkeypatch):
+    cache = Cache(str(tmp_path / "candidate-hints.sqlite"))
+    monkeypatch.setattr(identity_map, "runtime_cache", lambda: cache)
+    monkeypatch.setattr(identity_map, "identity_cache_seconds", lambda: 3600)
+
+    mission = _mission()
+    probable = ValidatedOffer(
+        offer=_offer(url="https://shop.example.ua/probable"),
+        verdict=Verdict.PASS,
+        score=0.79,
+        identity_confidence=IdentityConfidence.PROBABLE,
+        positive_evidence=["source token overlap=0.80"],
+    )
+
+    assert identity_map.remember_confirmed_identities(mission, "web_shops", [probable]) == 0
+    assert identity_map.remember_candidate_hints(mission, "web_shops", [probable]) == 1
+    assert identity_map.load_identity_urls(mission, "web_shops") == []
+    assert identity_map.load_candidate_hint_urls(mission, "web_shops") == [
+        "https://shop.example.ua/probable"
+    ]
+
+
+def test_webshops_candidate_hint_revalidates_without_discovery(monkeypatch):
+    scout = WebShopsScout(timeout=1, max_candidates_per_query=5)
+    mission = _mission()
+    free_search_calls = 0
+    methods = []
+
+    async def fake_queries(_mission):
+        return ["Honda EU35i"]
+
+    async def should_not_search(client, query):
+        nonlocal free_search_calls
+        free_search_calls += 1
+        return []
+
+    async def fetch_urls(client, mission, query, urls, method, errors=None):
+        methods.append(method)
+        return [_offer(url=urls[0])] if urls else []
+
+    monkeypatch.setenv("PUMA_REFRESH_ONLY", "1")
+    monkeypatch.setattr(web_module, "load_identity_urls", lambda *a, **k: [])
+    monkeypatch.setattr(
+        web_module,
+        "load_candidate_hint_urls",
+        lambda *a, **k: ["https://shop.example.ua/honda-eu35i"],
+    )
+    monkeypatch.setattr(web_module, "remember_candidate_hints", lambda *a, **k: 1)
+    monkeypatch.setattr(web_module, "remember_confirmed_identities", lambda *a, **k: 0)
+    monkeypatch.setattr(web_module, "validate_offer", lambda mission, offer: _validated(offer))
+    monkeypatch.setattr(scout, "generate_queries", fake_queries)
+    monkeypatch.setattr(scout, "_urls", should_not_search)
+    monkeypatch.setattr(scout, "_fetch_urls", fetch_urls)
+
+    async def scenario():
+        try:
+            return await scout.scan(mission)
+        finally:
+            await scout.aclose()
+
+    report = asyncio.run(scenario())
+
+    assert methods == ["candidate-hint"]
+    assert free_search_calls == 0
+    assert report.metrics["candidate_hint_refresh_hit"] is True
+    assert report.metrics["candidate_hint_urls_loaded"] == 1
+    assert report.metrics["serper_queries_attempted"] == 0
