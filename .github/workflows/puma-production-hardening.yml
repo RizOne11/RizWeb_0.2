@@ -2,7 +2,7 @@ name: PUMA Production Hardening
 
 on:
   push:
-    branches: [puma-production-hardening]
+    branches: [puma-production-hardening, main]
   workflow_dispatch:
 
 jobs:
