@@ -49,13 +49,13 @@ def sync_once() -> int:
             continue
 
         if status == "cancelling":
-            runtime.set_job(
-                job_id,
-                **data,
+            updated = dict(data)
+            updated.update(
                 status="cancelled",
                 message="Аналіз скасовано до наступного worker кроку.",
                 finished_at=time.time(),
             )
+            runtime.set_job(job_id, **updated)
             continue
 
         if status not in {"queued", "running"}:
@@ -69,24 +69,24 @@ def sync_once() -> int:
             store.ensure_file(job_id, "checkpoint.json")
 
         checkpoint = legacy.JOBS_DIR / job_id / "checkpoint.json"
-        same_build = (data.get("engine_build") or legacy.ENGINE_BUILD) == legacy.ENGINE_BUILD
+        same_build = (data.get("engine_build") or "legacy") == legacy.ENGINE_BUILD
         if not input_path or not input_path.is_file():
-            runtime.set_job(
-                job_id,
-                **data,
+            updated = dict(data)
+            updated.update(
                 status="error",
                 message="Worker не зміг відновити вхідний файл з durable storage.",
                 finished_at=time.time(),
             )
+            runtime.set_job(job_id, **updated)
             continue
         if not same_build:
-            runtime.set_job(
-                job_id,
-                **data,
+            updated = dict(data)
+            updated.update(
                 status="interrupted",
                 message="Build змінився; автоматичне продовження цього job заблоковано.",
                 resume_available=False,
             )
+            runtime.set_job(job_id, **updated)
             continue
 
         queued = dict(data)
