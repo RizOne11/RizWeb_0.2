@@ -101,6 +101,11 @@ def _bounded_int_env(name, default, minimum=0, maximum=100000):
     return max(minimum, min(value, maximum))
 
 
+def _execution_mode():
+    value = os.getenv("PUMA_EXECUTION_MODE", "combined").strip().casefold()
+    return value if value in {"combined", "web", "worker"} else "combined"
+
+
 def _max_active_jobs():
     # 0 keeps local/dev behaviour unlimited. Production sets an explicit cap.
     return _bounded_int_env("PUMA_MAX_ACTIVE_JOBS", 0, 0, 16)
@@ -292,6 +297,10 @@ def _start_worker(jid):
     p=JOBS_DIR/jid/j["filename"]
     if not p.exists():
         return False
+    if _execution_mode()=="web":
+        # Durable split mode: the web service only enqueues. A worker service
+        # restores the input from shared storage and executes it.
+        return True
 
     with _lock:
         if jid in _running_threads:
@@ -316,6 +325,8 @@ def _start_worker(jid):
         return False
 
 def _start_next_queued():
+    if _execution_mode()=="web":
+        return
     while True:
         with _lock:
             active_limit=_max_active_jobs()
@@ -338,7 +349,7 @@ _load_previous_jobs()
 def _ui_cfg():return json.loads((BASE/"config.json").read_text(encoding="utf-8"))
 @app.get("/healthz")
 def healthz():
-    return jsonify({"ok": True, "service": "puma", "engine_build": ENGINE_BUILD})
+    return jsonify({"ok": True, "service": "puma", "engine_build": ENGINE_BUILD, "execution_mode": _execution_mode()})
 
 @app.get("/")
 def index():
