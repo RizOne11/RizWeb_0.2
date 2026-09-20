@@ -6,8 +6,6 @@ import threading
 import time
 from pathlib import Path
 
-os.environ.setdefault("PUMA_EXECUTION_MODE", "worker")
-
 import app as legacy
 import durable_wsgi as runtime
 
