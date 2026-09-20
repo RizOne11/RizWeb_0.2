@@ -2,7 +2,7 @@ name: PUMA Gold Regression
 
 on:
   push:
-    branches: [main, puma-gold-regression, puma-homoglyph-hardening]
+    branches: [main, puma-gold-regression, puma-homoglyph-hardening, puma-category-apparel]
 
 jobs:
   gold-regression:
