@@ -97,12 +97,20 @@ def _apparel_sizes(text: str) -> set[str]:
         for match in _BRA_SIZE_RE.finditer(raw)
     }
 
-    # Numeric garment/shoe sizes are meaningful only inside an apparel profile.
-    # Keep the range narrow enough to avoid years, model numbers and dimensions.
-    numeric_range = range(34, 65) if not _FOOTWEAR_RE.search(raw) else range(34, 51)
-    allowed = {str(value) for value in numeric_range}
-    for value in re.findall(r"(?<!\d)(\d{2})(?!\d)", raw):
-        if value in allowed:
+    # Numeric sizes need stronger context than XS/M/XL. Footwear commonly
+    # publishes a bare EU size ("... 43 Red"), while garment numbers are only
+    # trusted when explicitly labelled. Never take suffixes from SKU/model codes
+    # such as (186Pj-35) as a size.
+    if _FOOTWEAR_RE.search(raw):
+        for value in re.findall(r"(?<![\w/_-])(\d{2})(?![\w/_-])", raw):
+            if 34 <= int(value) <= 50:
+                out.add(value)
+    for value in re.findall(
+        r"\b(?:розмір|размер|size)\s*[:#-]?\s*(\d{2})(?!\d)",
+        raw,
+        re.I,
+    ):
+        if 34 <= int(value) <= 64:
             out.add(value)
 
     return out
