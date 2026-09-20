@@ -383,8 +383,8 @@ def analyze():
     supplier=(request.form.get("supplier") or Path(f.filename).stem or "Не вказано").strip();
     try:limit=int((request.form.get("limit") or "30").strip())
     except ValueError:limit=30
-    limit=max(1,min(limit,int(os.getenv("MAX_PRODUCTS_PER_JOB","5000"))));allowed=set(production_marketplace_ids(BASE/"config.json"));selected=request.form.getlist("marketplaces") or list(allowed)
-    selected=[x for x in selected if x in allowed] or list(allowed)
+    limit=max(1,min(limit,int(os.getenv("MAX_PRODUCTS_PER_JOB","5000"))));allowed_ids=production_marketplace_ids(BASE/"config.json");allowed=set(allowed_ids);selected=request.form.getlist("marketplaces") or list(allowed_ids)
+    selected=[x for x in selected if x in allowed] or list(allowed_ids)
     jid=uuid.uuid4().hex[:12];d=JOBS_DIR/jid;d.mkdir(parents=True,exist_ok=True);fn=secure_filename(f.filename) or "catalog.xlsx";p=d/fn;f.save(p);fp=_job_fingerprint(p,supplier,selected,limit);dup=_find_active_duplicate(fp)
     if dup:shutil.rmtree(d,ignore_errors=True);return redirect(url_for("job_page",job_id=dup),code=303)
     set_job(jid,id=jid,status="queued",percent=0,current=0,total=0,message="Задача поставлена в чергу",filename=fn,supplier=supplier,marketplaces=selected,limit=limit,fingerprint=fp,created_at=time.time(),resume_available=False,engine_build=ENGINE_BUILD);_start_worker(jid);return redirect(url_for("job_page",job_id=jid),code=303)
