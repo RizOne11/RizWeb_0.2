@@ -1,73 +1,85 @@
-# PriceIntel Web v0.3 — Serper
+# PUMA Platform v1.3
 
-Ця версія замінює HTML-парсинг DuckDuckGo/Bing на Serper Google Search API.
+PUMA — production-oriented market analysis and product-content platform.
 
-## Що змінилось
-- 1 Serper search-запит на 1 товар.
-- Один запит шукає одразу по Rozetka, Prom, Epicentr, Allo, Foxtrot і Comfy.
-- Результати розкладаються по маркетплейсах локально.
-- Далі програма відкриває знайдені сторінки, витягує ціну та застосовує Match Score.
-- Детальні логи залишені для тестування.
+## Current production baseline
 
-## Налаштування Render
-1. Render -> твій Web Service -> Environment.
-2. Add Environment Variable.
-3. Name: `SERPER_API_KEY`
-4. Value: твій ключ із Serper.
-5. Save Changes.
-6. Render зробить redeploy (або Manual Deploy -> Deploy latest commit).
+Active market sources:
 
-**Не додавай API key у GitHub і не надсилай його в чат.**
+- Prom
+- Epicentr
+- Hotline
+- WEB_SHOPS
 
-## Тест
-Почни з 5 товарів. У Render Logs має бути:
-- `Serper API key configured: True`
-- `SERPER QUERY: ...`
-- `SERPER HTTP 200`
-- `SERPER ORGANIC: ... result(s)`
-- `SERPER rozetka.com.ua: ... hit(s)` тощо.
+Rozetka is frozen. Allo/Comfy are paused. Zakupka is not part of production.
 
-Якщо пошукові результати є, але пропозицій 0 — наступний етап проблеми вже у fetch/extract/match, і лог покаже конкретну причину.
+The matcher is treated as stable. Any future matcher change must include a regression case and pass the full matcher gate chain before release.
 
-## Ліміти
-Безкоштовні 2,500 Serper queries ≈ до 2,500 товарів у цій архітектурі (по одному search-запиту на товар), не рахуючи повторних запусків.
+## Market analysis
 
+The production engine:
 
-## v0.4.1
-- Added supplier field to upload form.
-- Category + supplier are included in browser preview, main CSV and competitor offers CSV.
+- keeps supplier SKU/article immutable;
+- separates supplier SKU from public model/MPN identity;
+- canonicalizes RU/UA and mixed-script identity text;
+- validates brand/model/variant/category conflicts;
+- excludes AMBIGUOUS and CONFLICT offers from market price statistics;
+- reports min / median / average / max market prices;
+- keeps marketplace URLs and identity confidence;
+- supports checkpoint/resume for long-running jobs;
+- uses durable S3-compatible storage for job inputs, status, checkpoints and reports.
 
-## v0.4.2
-- Added `Запас до рынка, грн` = market median minus supplier/own price.
-- Added `Запас до рынка, %` = reserve divided by own price.
-- Both fields are included in the browser report and main CSV.
-- Positive value means the market median is above your price; negative means your price is above the median.
+## Production hardening
 
-## v0.4.3 — Price Validation
-- Serper fallback prices are checked against the supplier/own price.
-- Default anomaly threshold: >3x difference (`serper_price_ratio_limit` in config.json).
-- Suspicious Serper prices remain visible in the competitor-offers CSV.
-- Suspicious prices are excluded from MIN / MEDIAN / AVG / MAX / Price Score / verdict calculations.
-- If a product has only suspicious prices, verdict becomes `⚠️ ЦІНА НЕ ПІДТВЕРДЖЕНА`.
-- Main report includes `Підозрілих цін`.
-- Offers report includes `Статус цены` and `Причина проверки`.
+Current runtime includes:
 
-## v0.5.1
-Unified report schema across runner, browser preview, CSV and XLSX.
+- optional fail-closed authentication with PUMA_AUTH_TOKEN;
+- Bearer auth for API clients and Basic auth for browser access;
+- bounded active jobs and outstanding queue;
+- start-rate limiting;
+- duplicate job suppression;
+- cooperative cancel with checkpoint preservation;
+- Serper request/cache accounting with optional cost estimation;
+- combined, web and worker execution modes;
+- public /healthz endpoint.
 
-## v0.6.0 — Search Engine 2.0
-- Cascade search: SKU -> brand+SKU -> cleaned product title.
-- Extra Serper calls happen only when earlier stages return fewer than 3 target-market hits.
-- Added Kasta and Hotline.
-- Added seller count and market confidence.
-- One valid offer cannot produce the strongest `🔥 РЕКЛАМУВАТИ` verdict; it is downgraded to `🟡 ТЕСТУВАТИ`.
-- Same-price tolerance is ±1 UAH.
+## Config v2
 
-## v0.6.1
-Hotfix: explicit cascade logging, full-query Serper stages, Kasta/Hotline UI and XLSX columns.
+config.json remains backward-compatible with legacy PriceIntel keys.
 
-## v0.7.0 — Wide UA Market
-- Collects Ukrainian non-target shops from the same Serper responses; no extra Serper API call is required.
-- Other shops pass the same product matcher and price validation.
-- Other-shop prices are shown separately in browser/CSV/XLSX and detailed offers.
-- Other-shop prices DO NOT affect MIN/Median/Average/MAX/Score/Verdict yet.
+New production settings live under the production section and are loaded through puma_config.py. The production source allowlist is not derived from the old legacy marketplace list.
+
+## Runtime
+
+Production web entrypoint:
+
+    durable_wsgi:app
+
+Background worker entrypoint prepared for split deployment:
+
+    python puma_worker.py
+
+The live Render service currently remains in combined mode until a dedicated worker service is provisioned with the same durable-storage and provider secrets.
+
+## Tests and gates
+
+Key gates include:
+
+- PUMA Production Hardening
+- PUMA Gold Regression
+- PUMA v1.3 Exact Five Smoke
+- Recovery13
+- Mixed18
+- Full1000
+
+Post-production cleanup has its own regression gate and runs the full pytest suite.
+
+## Legacy
+
+The historical PriceIntel CLI is retained only as a compatibility wrapper:
+
+    python main.py <catalog>
+
+Its implementation lives under legacy/.
+
+Version-specific historical README files remain as migration/history material and are not the source of truth for the current production architecture.
