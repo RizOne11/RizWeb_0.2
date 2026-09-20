@@ -26,7 +26,8 @@ class HealthHandler(BaseHTTPRequestHandler):
             return
 
         payload = {
-            "ok": runtime._STORE.enabled,
+            "ok": True,
+            "ready": runtime._STORE.enabled,
             "service": "puma-worker",
             "engine_build": legacy.ENGINE_BUILD,
             "execution_mode": legacy._execution_mode(),
@@ -36,7 +37,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             "last_error": _LAST_SYNC["error"],
         }
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(200 if payload["ok"] else 503)
+        self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
@@ -69,9 +70,6 @@ def shutdown(*_args):
 def main() -> int:
     if legacy._execution_mode() != "worker":
         raise SystemExit("PUMA worker service requires PUMA_EXECUTION_MODE=worker")
-    if not runtime._STORE.enabled:
-        raise SystemExit("PUMA worker service requires durable PUMA_S3_* storage")
-
     port = int(os.getenv("PORT", "10000"))
     server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
 
@@ -82,7 +80,8 @@ def main() -> int:
     thread.start()
 
     print(
-        f"PUMA_WORKER_SERVICE started build={legacy.ENGINE_BUILD} port={port} poll={puma_worker._poll_seconds()}s",
+        f"PUMA_WORKER_SERVICE started build={legacy.ENGINE_BUILD} port={port} "
+        f"poll={puma_worker._poll_seconds()}s durable={str(runtime._STORE.enabled).lower()}",
         flush=True,
     )
 
