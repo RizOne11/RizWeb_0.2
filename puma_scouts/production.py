@@ -10,6 +10,17 @@ from .models import IdentityConfidence,ProductMission,Verdict,ScanHealth,ScanRep
 from .price_score import assess_price_market
 from .scouts.base import repair_discovery_scope
 
+
+class RunCancelled(RuntimeError):
+    """Cooperative cancellation requested by the hosting job runner."""
+
+
+def _cancel_requested(callback: Callable[[], bool] | None) -> bool:
+    try:
+        return bool(callback and callback())
+    except Exception:
+        return False
+
 def _text(v:Any)->str:return "" if v is None else str(v).strip()
 def _currency_code(v:Any)->str:
     text=_text(v).upper().replace(".","")
@@ -319,7 +330,7 @@ def _save_checkpoint(path:str|None,token:str|None,missions:list[ProductMission],
     tmp.write_text(json.dumps(payload,ensure_ascii=False,separators=(",",":")),encoding="utf-8")
     os.replace(tmp,p)
 
-async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[str]|None=None,progress_cb:Callable|None=None,classic_output_path:str|None=None,supplier:str="",checkpoint_path:str|None=None,checkpoint_token:str|None=None)->dict[str,Any]:
+async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[str]|None=None,progress_cb:Callable|None=None,classic_output_path:str|None=None,supplier:str="",checkpoint_path:str|None=None,checkpoint_token:str|None=None,cancel_cb:Callable[[],bool]|None=None)->dict[str,Any]:
     missions=read_missions(input_path,limit)
     completed_state=_load_checkpoint(checkpoint_path,checkpoint_token,missions)
     scout_pool=scouts(selected)
@@ -328,12 +339,27 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
     refresh_mode=_env_flag("PUMA_REFRESH_ONLY")
     repair_enabled=refresh_mode and _env_flag("PUMA_REFRESH_REPAIR_ENABLED")
 
+    async def _store_completed(index:int,m:ProductMission,found,diag,message="Товар перевірено"):
+        async with lock:
+            completed_state[index]={"article":m.article,"found":found,"diagnostics":diag}
+            _save_checkpoint(checkpoint_path,checkpoint_token,missions,completed_state)
+            current=len(completed_state)
+            if progress_cb:
+                progress_cb(current,len(missions),m.source_data.get("name",m.article),message)
+
     async def one(index:int,m:ProductMission):
+        if _cancel_requested(cancel_cb):
+            raise RunCancelled("job cancellation requested")
         async with semaphore:
+            if _cancel_requested(cancel_cb):
+                raise RunCancelled("job cancellation requested")
             async with lock:
                 already_done=len(completed_state)
             if progress_cb:progress_cb(already_done,len(missions),m.source_data.get("name",m.article),f"Шукаємо реальні пропозиції… (паралельність {PRODUCT_CONCURRENCY})")
             found,diag=await scan_detailed(m,selected,scout_pool=scout_pool)
+            if _cancel_requested(cancel_cb):
+                await _store_completed(index,m,found,diag,"Товар завершено перед скасуванням")
+                raise RunCancelled("job cancellation requested")
             if not refresh_mode:
                 remember_discovery_sources(m,{x.get("source","") for x in found if x.get("source")})
             elif repair_enabled:
@@ -379,18 +405,25 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
                             diag[src]=after
                         if repair_found:
                             found.extend(repair_found)
-            async with lock:
-                completed_state[index]={"article":m.article,"found":found,"diagnostics":diag}
-                _save_checkpoint(checkpoint_path,checkpoint_token,missions,completed_state)
-                current=len(completed_state)
-                if progress_cb:progress_cb(current,len(missions),m.source_data.get("name",m.article),"Товар перевірено")
+            await _store_completed(index,m,found,diag)
+            if _cancel_requested(cancel_cb):
+                raise RunCancelled("job cancellation requested")
             return index
 
     pending=[(i,m) for i,m in enumerate(missions) if i not in completed_state]
     if progress_cb and completed_state:
         progress_cb(len(completed_state),len(missions),"Відновлення",f"Продовжуємо з {len(completed_state)} з {len(missions)} вже перевірених товарів")
-    if pending:
-        await asyncio.gather(*[one(i,m) for i,m in pending])
+    try:
+        if pending:
+            await asyncio.gather(*[one(i,m) for i,m in pending])
+        if _cancel_requested(cancel_cb):
+            raise RunCancelled("job cancellation requested")
+    except RunCancelled:
+        await asyncio.gather(
+            *(s.aclose() for s in scout_pool if hasattr(s,"aclose")),
+            return_exceptions=True,
+        )
+        raise
 
     rows=[]
     diagnostics_by_article={}
