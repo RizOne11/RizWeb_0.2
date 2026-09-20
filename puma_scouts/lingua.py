@@ -39,6 +39,10 @@ _HOMOGLYPH_LAT_VARIANTS = {
     "i": "iі",
 }
 _IDENTITY_TOKEN_RE = re.compile(r"[0-9A-Za-zА-Яа-яІіЇїЄєҐґ]+", re.UNICODE)
+_CODELIKE_FRAGMENT_RE = re.compile(
+    r"(?<!\w)[0-9A-Za-zА-Яа-яІіЇїЄєҐґ]+(?:[._/+:-][0-9A-Za-zА-Яа-яІіЇїЄєҐґ]+)+(?!\w)",
+    re.UNICODE,
+)
 
 
 def _fold_identity_token(match: re.Match[str]) -> str:
@@ -71,6 +75,20 @@ def fold_homoglyphs(value: object) -> str:
     text = re.sub(r"[‐‑‒–—−]", "-", text)
     text = re.sub(r"(?<=\d)\s*[xх×]\s*(?=\d)", "x", text, flags=re.I)
     text = _IDENTITY_TOKEN_RE.sub(_fold_identity_token, text)
+
+    # Catch punctuation-separated code fragments such as BZ-425.М or
+    # OLS-PL-30.К. The digit+Latin requirement keeps ordinary abbreviations
+    # such as "р.S" out of this identity-only path.
+    def fold_code_fragment(match: re.Match[str]) -> str:
+        raw = match.group(0)
+        if not re.search(r"\d", raw) or not re.search(r"[a-z]", raw):
+            return raw
+        cyrillic = re.findall(r"[а-яіїєґ]", raw, re.I)
+        if not cyrillic or not all(ch.casefold() in _HOMOGLYPH_CYR_TO_LAT for ch in cyrillic):
+            return raw
+        return "".join(_HOMOGLYPH_CYR_TO_LAT.get(ch, ch) for ch in raw)
+
+    text = _CODELIKE_FRAGMENT_RE.sub(fold_code_fragment, text)
     return re.sub(r"\s+", " ", text).strip()
 
 
