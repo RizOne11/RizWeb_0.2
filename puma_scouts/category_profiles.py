@@ -12,6 +12,7 @@ CONSUMABLE_MULTIPACK = "consumable_multipack"
 CABLE_LENGTH_VARIANT = "cable_length_variant"
 ENERGY_POWER = "energy_power"
 WEARABLE_MODEL_VARIANT = "wearable_model_variant"
+APPAREL_SIZE_VARIANT = "apparel_size_variant"
 
 
 @dataclass(frozen=True)
@@ -59,10 +60,60 @@ def _lengths_m(text: str) -> set[float]:
     return {value for value in out if 0 < value <= 1000}
 
 
+_APPAREL_RE = re.compile(
+    r"\b(?:"
+    r"куртк\w*|шорт\w*|купальник\w*|бель[еёя]\w*|пижам\w*|піжам\w*|"
+    r"футболк\w*|толстовк\w*|худ[иі]\w*|джинс\w*|брюк\w*|штан\w*|"
+    r"термобель\w*|термобілизн\w*|кепк\w*|шапк\w*|сукн\w*|плать\w*|"
+    r"ботинк\w*|черевик\w*|бутс\w*|шиповк\w*|кроссовк\w*|кросівк\w*|"
+    r"туфл\w*|сандал\w*|clothing|shirt|t-?shirt|hoodie|jacket|shorts|"
+    r"swimsuit|lingerie|pajamas?|pyjamas?|jeans|pants|shoes?|sneakers?|boots?"
+    r")\b",
+    re.I,
+)
+_FOOTWEAR_RE = re.compile(
+    r"\b(?:ботинк\w*|черевик\w*|бутс\w*|шиповк\w*|кроссовк\w*|кросівк\w*|"
+    r"туфл\w*|сандал\w*|shoes?|sneakers?|boots?)\b",
+    re.I,
+)
+_ALPHA_SIZE_RE = re.compile(
+    r"(?<![a-zа-яіїєґ0-9])(?:5xl|4xl|3xl|2xl|xxxl|xxl|xl|l|m|s|xs|xxs|xxxs)(?![a-zа-яіїєґ0-9])",
+    re.I,
+)
+_BRA_SIZE_RE = re.compile(
+    r"(?<!\d)(?:60|65|70|75|80|85|90|95|100|105|110)\s*[/ -]?\s*(?:aa|a|b|c|d|e|f|g)(?![a-z])",
+    re.I,
+)
+
+
+def _apparel_sizes(text: str) -> set[str]:
+    raw = _norm(text)
+    if not _APPAREL_RE.search(raw):
+        return set()
+
+    out = {match.group(0).casefold().replace(" ", "") for match in _ALPHA_SIZE_RE.finditer(raw)}
+    out |= {
+        re.sub(r"[\s/-]+", "", match.group(0).casefold())
+        for match in _BRA_SIZE_RE.finditer(raw)
+    }
+
+    # Numeric garment/shoe sizes are meaningful only inside an apparel profile.
+    # Keep the range narrow enough to avoid years, model numbers and dimensions.
+    numeric_range = range(34, 65) if not _FOOTWEAR_RE.search(raw) else range(34, 51)
+    allowed = {str(value) for value in numeric_range}
+    for value in re.findall(r"(?<!\d)(\d{2})(?!\d)", raw):
+        if value in allowed:
+            out.add(value)
+
+    return out
+
+
 def classify_category(mission: ProductMission) -> str:
     text = _norm(_source_text(mission))
     if re.search(r"\b(?:ноутбук|laptop|комп(?:ьютер|'ютер)|desktop|thinkpad|optiplex|latitude)\b", text, re.I):
         return COMPUTER_VARIANT
+    if _APPAREL_RE.search(text) and _apparel_sizes(text):
+        return APPAREL_SIZE_VARIANT
     quantity = _pack_quantity(text)
     if quantity and quantity > 1 and re.search(r"\b(?:газов\w*\s+балл?он\w*|балл?он\w*\s+газов\w*|балон\w*\s+газов\w*)\b", text, re.I):
         return CONSUMABLE_MULTIPACK
@@ -197,6 +248,20 @@ def _cable_assessment(source: str, candidate: str) -> CategoryAssessment:
     return CategoryAssessment(CABLE_LENGTH_VARIANT)
 
 
+def _apparel_assessment(source: str, candidate: str) -> CategoryAssessment:
+    expected = _apparel_sizes(source)
+    actual = _apparel_sizes(candidate)
+    if expected and actual and expected.isdisjoint(actual):
+        return CategoryAssessment(
+            APPAREL_SIZE_VARIANT,
+            (f"apparel size mismatch: expected {sorted(expected)}, got {sorted(actual)}",),
+            (),
+        )
+    if expected and not actual:
+        return CategoryAssessment(APPAREL_SIZE_VARIANT, (), ("apparel size",))
+    return CategoryAssessment(APPAREL_SIZE_VARIANT)
+
+
 
 def _power_w(text: str) -> set[int]:
     raw = _norm(text)
@@ -327,6 +392,8 @@ def assess_category(mission: ProductMission, offer_text: str) -> CategoryAssessm
         return _multipack_assessment(source, candidate)
     if profile == CABLE_LENGTH_VARIANT:
         return _cable_assessment(source, candidate)
+    if profile == APPAREL_SIZE_VARIANT:
+        return _apparel_assessment(source, candidate)
     if profile == ENERGY_POWER:
         return _energy_assessment(source, candidate)
     if profile == WEARABLE_MODEL_VARIANT:
