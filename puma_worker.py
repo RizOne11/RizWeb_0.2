@@ -6,9 +6,6 @@ import threading
 import time
 from pathlib import Path
 
-import app as legacy
-import durable_wsgi as runtime
-
 
 _STOP = threading.Event()
 
@@ -20,15 +17,19 @@ def _poll_seconds() -> float:
         return 2.0
 
 
-def _request_local_cancel(job_id: str) -> None:
+def _request_local_cancel(job_id: str, legacy) -> None:
     with legacy._lock:
         legacy._cancel_events.setdefault(job_id, threading.Event()).set()
         if job_id in legacy._jobs:
             legacy._jobs[job_id]["status"] = "cancelling"
 
 
-def sync_once() -> int:
+def sync_once(runtime=None, legacy=None) -> int:
     """Synchronize durable jobs into the worker process and start queued work."""
+    if legacy is None:
+        import app as legacy
+    if runtime is None:
+        import durable_wsgi as runtime
     store = runtime._STORE
     if not store.enabled:
         return 0
@@ -43,7 +44,7 @@ def sync_once() -> int:
 
         if legacy._thread_alive(job_id):
             if status == "cancelling":
-                _request_local_cancel(job_id)
+                _request_local_cancel(job_id, legacy)
             continue
 
         if status == "cancelling":
@@ -104,7 +105,7 @@ def sync_once() -> int:
     return seen
 
 
-def _shutdown(*_args) -> None:
+def _shutdown(legacy) -> None:
     _STOP.set()
     with legacy._lock:
         events = list(legacy._cancel_events.values())
@@ -113,20 +114,23 @@ def _shutdown(*_args) -> None:
 
 
 def main() -> int:
+    import app as legacy
+    import durable_wsgi as runtime
+
     if legacy._execution_mode() != "worker":
         raise SystemExit("PUMA worker requires PUMA_EXECUTION_MODE=worker")
     if not runtime._STORE.enabled:
         raise SystemExit("PUMA worker requires durable PUMA_S3_* storage")
 
-    signal.signal(signal.SIGTERM, _shutdown)
-    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGTERM, lambda *_args: _shutdown(legacy))
+    signal.signal(signal.SIGINT, lambda *_args: _shutdown(legacy))
     print(
         f"PUMA_WORKER started build={legacy.ENGINE_BUILD} poll={_poll_seconds()}s",
         flush=True,
     )
 
     while not _STOP.is_set():
-        sync_once()
+        sync_once(runtime=runtime, legacy=legacy)
         _STOP.wait(_poll_seconds())
 
     print("PUMA_WORKER stopped", flush=True)
