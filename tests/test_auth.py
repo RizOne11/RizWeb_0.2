@@ -83,3 +83,16 @@ def test_required_auth_without_secret_fails_closed(monkeypatch):
     response = client.get("/api/jobs/does-not-exist")
     assert response.status_code == 503
     assert response.get_json()["error"] == "auth_not_configured"
+
+
+def test_healthz_remains_public_when_auth_is_required(monkeypatch):
+    _clear_auth(monkeypatch)
+    monkeypatch.setenv("PUMA_AUTH_TOKEN", "secret-token")
+    monkeypatch.setenv("PUMA_REQUIRE_AUTH", "1")
+    client = puma_app.app.test_client()
+
+    response = client.get("/healthz")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ok"] is True
+    assert payload["service"] == "puma"
