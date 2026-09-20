@@ -75,6 +75,31 @@ def fold_homoglyphs(value: object) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def fold_homoglyphs_preserve_case(value: object) -> str:
+    """Canonicalize identity fragments without lowercasing normal query prose."""
+    text = unicodedata.normalize("NFKC", str(value or ""))
+    text = text.replace("\u00a0", " ")
+    text = re.sub(r"[‐‑‒–—−]", "-", text)
+    text = re.sub(r"(?<=\d)\s*[xх×]\s*(?=\d)", "x", text, flags=re.I)
+
+    def repl(match: re.Match[str]) -> str:
+        raw = match.group(0)
+        folded = fold_homoglyphs(raw)
+        if folded == raw.casefold():
+            return raw
+        # Homoglyph folding is one-to-one for identifier tokens; mirror the
+        # source character casing so search queries remain human-readable.
+        if len(folded) == len(raw):
+            return "".join(
+                char.upper() if source.isupper() else char
+                for source, char in zip(raw, folded)
+            )
+        return folded.upper() if raw.isupper() else folded
+
+    text = _IDENTITY_TOKEN_RE.sub(repl, text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def canonical_compact(value: object) -> str:
     return re.sub(r"[^0-9a-zа-яіїєґ]", "", fold_homoglyphs(value), flags=re.I)
 
