@@ -27,6 +27,8 @@ def _strong_identifier(value: str) -> bool:
     text = _compact(value)
     if not text or re.fullmatch(r"(?:19|20)\d{2}", text):
         return False
+    if re.fullmatch(r"\d{1,4}x\d{1,4}(?:x\d{1,4})?(?:mm|cm)?", text, re.I):
+        return False
     if text.isdigit():
         return len(text) >= 8
     letters = len(re.findall(r"[a-zа-яіїє]", text, re.I))
