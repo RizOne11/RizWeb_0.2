@@ -13,6 +13,36 @@ from puma_scouts.runtime_cache import runtime_cache, serper_cache_seconds
 SERPER_ENDPOINT = "https://google.serper.dev/search"
 
 
+def serper_usd_per_1000_requests() -> float:
+    try:
+        value = float(os.getenv("PUMA_SERPER_USD_PER_1000_REQUESTS", "0") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, value)
+
+
+def estimate_serper_cost_usd(api_requests: int, *, usd_per_1000: float | None = None) -> float:
+    rate = serper_usd_per_1000_requests() if usd_per_1000 is None else max(0.0, float(usd_per_1000))
+    return round(max(0, int(api_requests or 0)) * rate / 1000.0, 6)
+
+
+def serper_usage_snapshot(api_requests: int, cache_hits: int) -> dict[str, Any]:
+    requests = max(0, int(api_requests or 0))
+    hits = max(0, int(cache_hits or 0))
+    total = requests + hits
+    rate = serper_usd_per_1000_requests()
+    return {
+        "api_requests": requests,
+        "cache_hits": hits,
+        "searches_total": total,
+        "cache_hit_pct": round(hits / max(1, total) * 100, 1),
+        "usd_per_1000_requests": rate,
+        "estimated_cost_usd": estimate_serper_cost_usd(requests, usd_per_1000=rate),
+        "estimated_cache_savings_usd": estimate_serper_cost_usd(hits, usd_per_1000=rate),
+        "cost_configured": rate > 0,
+    }
+
+
 def _canonical_url(value: str) -> str | None:
     try:
         parsed = urlsplit(str(value or "").strip())
@@ -108,6 +138,10 @@ class SerperDiscovery:
         self.api_requests = 0
         self.cache_hits = 0
         self.disabled_reason = ""
+
+    @property
+    def usage(self) -> dict[str, Any]:
+        return serper_usage_snapshot(self.api_requests, self.cache_hits)
 
     @property
     def enabled(self) -> bool:
