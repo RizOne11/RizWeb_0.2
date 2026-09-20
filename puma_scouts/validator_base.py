@@ -241,8 +241,23 @@ def _identity_confidence(
     return IdentityConfidence.AMBIGUOUS
 
 
+_NON_IDENTITY_SOURCE_KEYS = {
+    "own_price", "old_price", "price", "discount", "cost", "currency",
+}
+
+
+def _identity_source_text(mission: ProductMission) -> str:
+    """Build matcher text without commercial values that can mimic model codes."""
+    return " ".join(
+        str(value)
+        for key, value in mission.source_data.items()
+        if str(key).casefold() not in _NON_IDENTITY_SOURCE_KEYS
+        and value not in (None, "")
+    )
+
+
 def validate_offer(mission: ProductMission, offer: Offer) -> ValidatedOffer:
-    source_text = " ".join(str(v) for v in mission.source_data.values())
+    source_text = _identity_source_text(mission)
     offer_text = " ".join([offer.title, *[f"{k} {v}" for k, v in offer.attributes.items()]])
     source_tokens, offer_tokens = _tokens(source_text), _tokens(offer_text)
     overlap = len(source_tokens & offer_tokens) / max(1, len(source_tokens))
