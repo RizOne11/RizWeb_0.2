@@ -137,3 +137,8 @@ def test_pure_cyrillic_alphanumeric_units_and_bundle_notation_are_not_overfolded
     assert fold_homoglyphs("500Вт") == "500вт"
     assert fold_homoglyphs("3в1") == "3в1"
     assert fold_homoglyphs("ВТ6778") == "вт6778"
+
+
+def test_mixed_script_normal_words_are_not_overtransliterated():
+    assert fold_homoglyphs("Cеро-розовый") == "cеро-розовый"
+    assert fold_homoglyphs("186Pj35Кофта") == "186pj35кофта"
