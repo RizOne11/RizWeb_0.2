@@ -14,7 +14,7 @@ from flask import Flask, Response, abort, jsonify, redirect, render_template, re
 from werkzeug.utils import secure_filename
 
 from priceintel.io import read_catalog
-from puma_scouts.production import run_sync
+from puma_scouts.production import RunCancelled, run_sync
 
 BASE = Path(__file__).resolve().parent
 JOBS_DIR = BASE / "data" / "jobs"
@@ -90,6 +90,7 @@ _jobs = {}
 _lock = threading.Lock()
 _running_threads = set()
 _submission_times = deque()
+_cancel_events = {}
 
 
 def _bounded_int_env(name, default, minimum=0, maximum=100000):
@@ -124,7 +125,7 @@ def _outstanding_job_count():
         return sum(
             1
             for job in _jobs.values()
-            if str(job.get("status") or "") in {"queued", "running"}
+            if str(job.get("status") or "") in {"queued", "running", "cancelling"}
         )
 
 
@@ -207,6 +208,9 @@ def _load_previous_jobs():
                 data["status"]="interrupted"
                 data["resume_available"]=checkpoint.exists() and (data.get("engine_build") or ENGINE_BUILD)==ENGINE_BUILD
                 data["message"]="Попередній процес перервався. Можна продовжити з останньої контрольної точки." if data["resume_available"] else "Попередній процес перервався. Запусти аналіз повторно."
+            elif data.get("status")=="cancelling":
+                data["status"]="cancelled"
+                data["message"]="Аналіз було скасовано."
             with _lock:_jobs[jid]=data
         except Exception:continue
 
@@ -218,7 +222,7 @@ def _file_sha256(path):
 def _job_fingerprint(path,supplier,markets,limit):return hashlib.sha256("|".join([_file_sha256(path),supplier.strip().lower(),",".join(sorted(markets)),str(limit)]).encode()).hexdigest()
 def _find_active_duplicate(fp):
     with _lock:items=list(_jobs.items())
-    return next((jid for jid,j in items if j.get("fingerprint")==fp and j.get("status") in {"queued","running"}),None)
+    return next((jid for jid,j in items if j.get("fingerprint")==fp and j.get("status") in {"queued","running","cancelling"}),None)
 def _thread_alive(jid):
     with _lock:return jid in _running_threads
 
@@ -227,11 +231,14 @@ def worker(job_id,input_path,limit,selected_markets,supplier):
     # still register themselves for test/dev compatibility.
     with _lock:
         _running_threads.add(job_id)
+        cancel_event=_cancel_events.setdefault(job_id,threading.Event())
     d=JOBS_DIR/job_id
     xlsx=d/"PUMA_doPUMAgatel_market_report.xlsx"
     classic_xlsx=d/"PUMA_classic_analytical_report.xlsx"
     checkpoint=d/"checkpoint.json"
     def progress(current,total,name,extra=None):
+        if cancel_event.is_set():
+            return
         set_job(
             job_id,status="running",current=current,total=total,
             percent=round(current/max(1,total)*100,1),current_product=name,
@@ -254,6 +261,7 @@ def worker(job_id,input_path,limit,selected_markets,supplier):
             str(input_path),str(xlsx),limit=limit,selected=selected_markets,
             progress_cb=progress,classic_output_path=str(classic_xlsx),supplier=supplier,
             checkpoint_path=str(checkpoint),checkpoint_token=ENGINE_BUILD,
+            cancel_cb=cancel_event.is_set,
         )
         set_job(
             job_id,status="done",percent=100,message="Готово",finished_at=time.time(),
@@ -261,6 +269,12 @@ def worker(job_id,input_path,limit,selected_markets,supplier):
             resume_available=False,engine_build=ENGINE_BUILD,
         )
         checkpoint.unlink(missing_ok=True)
+    except RunCancelled:
+        set_job(
+            job_id,status="cancelled",message="Аналіз скасовано користувачем.",
+            finished_at=time.time(),resume_available=checkpoint.exists(),
+            engine_build=ENGINE_BUILD,
+        )
     except Exception as e:
         set_job(
             job_id,status="error",message=f"{type(e).__name__}: {e}",finished_at=time.time(),
@@ -287,6 +301,7 @@ def _start_worker(jid):
             # The job remains queued and will be picked when a running job exits.
             return True
         _running_threads.add(jid)
+        _cancel_events.setdefault(jid,threading.Event()).clear()
 
     try:
         threading.Thread(
@@ -411,7 +426,32 @@ def download_classic_xlsx(job_id):
     if not p.exists():abort(404)
     return send_file(p,as_attachment=True,download_name="PUMA_classic_analytical_report.xlsx")
 @app.post("/api/jobs/<job_id>/cancel")
-def cancel_job(job_id):return jsonify({"ok":False,"message":"Production v1.3 runs bounded parallel products; cancel will return in the next build."}),409
+def cancel_job(job_id):
+    j=get_job(job_id)
+    if not j:abort(404)
+    status=str(j.get("status") or "")
+    if status in {"done","error","cancelled"}:
+        return jsonify({"ok":False,"message":"Job already finished.","status":status}),409
+
+    with _lock:
+        cancel_event=_cancel_events.setdefault(job_id,threading.Event())
+        cancel_event.set()
+        running=job_id in _running_threads
+
+    if status=="queued" and not running:
+        set_job(
+            job_id,status="cancelled",message="Аналіз скасовано до запуску.",
+            finished_at=time.time(),resume_available=(JOBS_DIR/job_id/"checkpoint.json").exists(),
+            engine_build=ENGINE_BUILD,
+        )
+        _start_next_queued()
+        return jsonify({"ok":True,"job_id":job_id,"status":"cancelled","immediate":True})
+
+    set_job(
+        job_id,status="cancelling",message="Скасовуємо аналіз після поточного мережевого кроку…",
+        cancel_requested_at=time.time(),engine_build=ENGINE_BUILD,
+    )
+    return jsonify({"ok":True,"job_id":job_id,"status":"cancelling","immediate":False}),202
 @app.post("/api/jobs/<job_id>/resume")
 def resume_job(job_id):
     if _outstanding_limit_reached() and not _thread_alive(job_id):
