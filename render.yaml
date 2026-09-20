@@ -3,9 +3,15 @@ services:
     name: priceintel
     runtime: docker
     plan: starter
-    healthCheckPath: /
+    healthCheckPath: /healthz
     envVars:
       - key: MAX_PRODUCTS_PER_JOB
         value: "5000"
       - key: MAX_UPLOAD_MB
         value: "120"
+      - key: PUMA_REQUIRE_AUTH
+        value: "1"
+      - key: PUMA_AUTH_USER
+        value: "puma"
+      - key: PUMA_AUTH_TOKEN
+        sync: false
