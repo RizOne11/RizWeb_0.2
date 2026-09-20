@@ -43,15 +43,18 @@ _IDENTITY_TOKEN_RE = re.compile(r"[0-9A-Za-zА-Яа-яІіЇїЄєҐґ]+", re.UN
 
 def _fold_identity_token(match: re.Match[str]) -> str:
     token = match.group(0).casefold()
-    has_latin = bool(re.search(r"[a-z]", token))
+    latin = re.findall(r"[a-z]", token)
     cyrillic = re.findall(r"[а-яіїєґ]", token, re.I)
-    has_cyrillic = bool(cyrillic)
 
-    # Fold only genuinely mixed Latin/Cyrillic tokens (EPСС2614, MВS-4708,
-    # NІKE). Pure Cyrillic alphanumeric text is meaningful in normal product
-    # prose: 500Вт, 3в1, ВТ6778 etc. Converting it would corrupt units and
-    # category semantics. Numeric dimensions are normalized separately above.
-    if not (has_latin and has_cyrillic):
+    # Fold only genuinely identifier-like mixed-script tokens. A marketplace
+    # typo can also splice a Latin letter into a normal Cyrillic word
+    # ("Cеро"), or append Cyrillic prose to an internal code
+    # ("186Pj35Кофта"). Those must not be transliterated into hybrid garbage.
+    if not (latin and cyrillic):
+        return token
+    if not all(ch.casefold() in _HOMOGLYPH_CYR_TO_LAT for ch in cyrillic):
+        return token
+    if not re.search(r"\d", token) and len(latin) < len(cyrillic):
         return token
 
     return "".join(_HOMOGLYPH_CYR_TO_LAT.get(ch, ch) for ch in token)
