@@ -44,21 +44,21 @@
   "serper_cache_seconds": 259200,
   "page_cache_seconds": 86400,
   "search_price_match_threshold": 90,
-  "serper_price_ratio_limit": 3.0,
+  "serper_price_ratio_limit": 3,
   "cascade_search_enabled": true,
   "cascade_min_hits": 3,
   "cascade_max_queries": 3,
-  "same_price_tolerance_uah": 1.0,
+  "same_price_tolerance_uah": 1,
   "other_ua_shops_enabled": true,
   "other_ua_shops_affect_score": true,
   "other_ua_shops_max_hits": 80,
-  "serper_usd_per_1000": 1.0,
-  "serper_forecast_requests_per_product": 8.0,
-  "market_overprice_red_pct": 10.0,
+  "serper_usd_per_1000": 1,
+  "serper_forecast_requests_per_product": 8,
+  "market_overprice_red_pct": 10,
   "page_fetch_workers": 6,
   "request_timeout_seconds": 12,
   "app_name": "PUMA Platform",
-  "app_version": "v1.2.6",
+  "app_version": "v1.3",
   "release_name": "Coverage-First Exact Market Orchestrator",
   "brand_author": "Пума (Чернявський А.)",
   "brand_line": "Made by Пума (Чернявський А.)",
@@ -89,7 +89,7 @@
   "marketplace_competitor_collection": true,
   "quality_first_mode": true,
   "price_consensus_verification_enabled": true,
-  "price_consensus_ratio_limit": 3.0,
+  "price_consensus_ratio_limit": 3,
   "price_consensus_min_peer_refs": 2,
   "search_matrix_enabled": true,
   "search_matrix_max_queries": 6,
@@ -118,5 +118,33 @@
   "verify_candidates_per_marketplace": 8,
   "candidate_prefilter_score_without_mpn": 90,
   "firecrawl_min_interval_seconds": 6.2,
-  "firecrawl_rate_limit_retries": 2
+  "firecrawl_rate_limit_retries": 2,
+  "schema_version": 2,
+  "production": {
+    "marketplaces": [
+      {
+        "id": "prom",
+        "name": "Prom",
+        "domain": "prom.ua"
+      },
+      {
+        "id": "epicentr",
+        "name": "Epicentr",
+        "domain": "epicentrk.ua"
+      },
+      {
+        "id": "hotline",
+        "name": "Hotline",
+        "domain": "hotline.ua"
+      },
+      {
+        "id": "web_shops",
+        "name": "WEB_SHOPS",
+        "domain": null
+      }
+    ],
+    "matcher_frozen": true,
+    "currency": "UAH",
+    "market_scope": "UA"
+  }
 }
