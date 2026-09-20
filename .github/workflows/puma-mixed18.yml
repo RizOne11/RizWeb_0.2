@@ -3,7 +3,7 @@ name: PUMA Real Mixed18 Catalog Gate
 on:
   workflow_dispatch:
   push:
-    branches: [puma-homoglyph-hardening]
+    branches: [puma-homoglyph-hardening, puma-category-apparel]
     paths:
       - '.github/workflows/puma-mixed18.yml'
       - 'benchmarks/PUMA_mixed18_20260920.csv'
