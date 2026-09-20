@@ -131,3 +131,9 @@ def test_identity_key_and_version_are_stable_across_homoglyph_variants():
 def test_category_profiles_use_the_same_canonical_identity_text():
     assert category_norm("NІKE 129 х 90 EPСС2614") == "nike 129x90 epcc2614"
     assert category_norm("NIKE 129 × 90 EPCC2614") == "nike 129x90 epcc2614"
+
+
+def test_pure_cyrillic_alphanumeric_units_and_bundle_notation_are_not_overfolded():
+    assert fold_homoglyphs("500Вт") == "500вт"
+    assert fold_homoglyphs("3в1") == "3в1"
+    assert fold_homoglyphs("ВТ6778") == "вт6778"
