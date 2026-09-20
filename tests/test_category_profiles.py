@@ -344,11 +344,12 @@ def test_classifier_detects_apparel_size_profile_from_mixed18_swimwear():
     ],
 )
 def test_apparel_profile_rejects_neighbor_size_variants(source_name, candidate):
+    brand = "Perfect Female" if "Perfect Female" in source_name else "OWAXX"
     mission = ProductMission(
         article="ROW-APPAREL",
-        source_data={"name": source_name, "brand": source_name.split()[1]},
+        source_data={"name": source_name, "brand": brand},
     )
-    checked = validate_offer(mission, _offer(mission, candidate, brand=mission.source_data["brand"]))
+    checked = validate_offer(mission, _offer(mission, candidate, brand=brand))
 
     assert checked.verdict != Verdict.PASS, checked
     assert any("apparel size mismatch" in reason.casefold() for reason in checked.conflicts), checked
