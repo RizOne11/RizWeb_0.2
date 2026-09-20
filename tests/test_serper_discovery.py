@@ -3,7 +3,7 @@ import json
 
 from puma_scouts.models import ProductMission
 from puma_scouts.query import generate_queries
-from puma_scouts.serper import SerperDiscovery, extract_serper_links
+from puma_scouts.serper import SerperDiscovery, estimate_serper_cost_usd, extract_serper_links, serper_usage_snapshot
 
 
 class _FakeResponse:
@@ -108,3 +108,37 @@ def test_serper_circuit_breaker_stops_repeated_429_requests():
     assert discovery.disabled_reason == "http_429"
     assert asyncio.run(discovery.search_urls("Polax hammer", client=client, site="prom.ua")) == []
     assert len(client.calls) == 1
+
+
+
+def test_serper_usage_snapshot_counts_requests_cache_and_cost(monkeypatch):
+    monkeypatch.setenv("PUMA_SERPER_USD_PER_1000_REQUESTS", "2.50")
+    usage = serper_usage_snapshot(4000, 1000)
+
+    assert usage["api_requests"] == 4000
+    assert usage["cache_hits"] == 1000
+    assert usage["searches_total"] == 5000
+    assert usage["cache_hit_pct"] == 20.0
+    assert usage["usd_per_1000_requests"] == 2.5
+    assert usage["estimated_cost_usd"] == 10.0
+    assert usage["estimated_cache_savings_usd"] == 2.5
+    assert usage["cost_configured"] is True
+
+
+def test_serper_cost_stays_unpriced_until_real_rate_is_configured(monkeypatch):
+    monkeypatch.delenv("PUMA_SERPER_USD_PER_1000_REQUESTS", raising=False)
+    assert estimate_serper_cost_usd(4129) == 0.0
+    usage = serper_usage_snapshot(4129, 343)
+    assert usage["cost_configured"] is False
+    assert usage["estimated_cost_usd"] == 0.0
+
+
+def test_serper_instance_exposes_current_usage(monkeypatch):
+    monkeypatch.setenv("PUMA_SERPER_USD_PER_1000_REQUESTS", "1")
+    discovery = SerperDiscovery(api_key="test-key", cache=False)
+    discovery.api_requests = 12
+    discovery.cache_hits = 3
+
+    assert discovery.usage["api_requests"] == 12
+    assert discovery.usage["cache_hits"] == 3
+    assert discovery.usage["estimated_cost_usd"] == 0.012
