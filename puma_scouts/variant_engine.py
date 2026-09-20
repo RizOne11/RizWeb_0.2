@@ -4,9 +4,11 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from puma_scouts.lingua import fold_homoglyphs
+
 
 def norm(value: Any) -> str:
-    text = str(value or "").casefold()
+    text = fold_homoglyphs(value)
     text = re.sub(r"[^\w./+\-\"]+", " ", text, flags=re.UNICODE)
     return re.sub(r"\s+", " ", text).strip()
 
