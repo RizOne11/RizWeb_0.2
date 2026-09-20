@@ -82,3 +82,24 @@ def test_store_rejects_path_traversal_job_ids(tmp_path):
         pass
     else:
         raise AssertionError("path traversal job id must be rejected")
+
+
+
+def test_remote_status_read_bypasses_stale_local_copy(tmp_path):
+    fake = FakeS3()
+    store = JobStore(tmp_path, client=fake, env=_env())
+    job_id = "fresh123"
+
+    local = store.local_path(job_id, "status.json")
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_text(json.dumps({"id": job_id, "status": "queued"}), encoding="utf-8")
+
+    fake.put_object(
+        Bucket=store.bucket,
+        Key=store._key(job_id, "status.json"),
+        Body=json.dumps({"id": job_id, "status": "done"}).encode("utf-8"),
+    )
+
+    assert store.load_status(job_id)["status"] == "queued"
+    assert store.load_remote_status(job_id)["status"] == "done"
+    assert json.loads(local.read_text(encoding="utf-8"))["status"] == "done"
