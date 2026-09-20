@@ -1,0 +1,23 @@
+name: PUMA Production Hardening
+
+on:
+  push:
+    branches: [puma-production-hardening]
+  workflow_dispatch:
+
+jobs:
+  production-hardening:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt pytest
+      - name: Auth regressions
+        run: pytest -q tests/test_auth.py
+      - name: Full regression suite
+        run: pytest -q tests
