@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass, field
 
 from puma_scouts.models import ProductMission
+from puma_scouts.lingua import fold_homoglyphs
 
 GENERIC = "generic"
 COMPUTER_VARIANT = "computer_variant"
@@ -21,7 +22,7 @@ class CategoryAssessment:
 
 
 def _norm(value: object) -> str:
-    return re.sub(r"\s+", " ", str(value or "").casefold()).strip()
+    return re.sub(r"\s+", " ", fold_homoglyphs(value)).strip()
 
 
 def _source_text(mission: ProductMission) -> str:
