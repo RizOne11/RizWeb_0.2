@@ -90,3 +90,4 @@ jobs:
               raise SystemExit('EXACT5_PRICE_INTEGRITY_FAILED')
           PY
 # exact-five verify bilingual query and brand port
+# trigger: homoglyph-final-preflight
