@@ -15,3 +15,9 @@ services:
         value: "puma"
       - key: PUMA_AUTH_TOKEN
         sync: false
+      - key: PUMA_MAX_ACTIVE_JOBS
+        value: "1"
+      - key: PUMA_MAX_OUTSTANDING_JOBS
+        value: "6"
+      - key: PUMA_JOB_STARTS_PER_MINUTE
+        value: "10"
