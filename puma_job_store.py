@@ -138,14 +138,19 @@ class JobStore:
             self.last_error = f"{type(exc).__name__}: {exc}"
             return False
 
-    def load_status(self, job_id: str) -> dict[str, Any] | None:
+    def load_status(self, job_id: str, *, prefer_remote: bool = False) -> dict[str, Any] | None:
         local = self.local_path(job_id, "status.json")
-        if local.is_file():
+        if not prefer_remote and local.is_file():
             try:
                 return json.loads(local.read_text(encoding="utf-8"))
             except Exception:
                 pass
         if not self.enabled:
+            if local.is_file():
+                try:
+                    return json.loads(local.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
             return None
         try:
             response = self._s3().get_object(Bucket=self.bucket, Key=self._key(job_id, "status.json"))
@@ -158,7 +163,18 @@ class JobStore:
             return data
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"
+            if prefer_remote:
+                return None
+            if local.is_file():
+                try:
+                    return json.loads(local.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
             return None
+
+    def load_remote_status(self, job_id: str) -> dict[str, Any] | None:
+        """Force a fresh durable status read for web/worker split mode."""
+        return self.load_status(job_id, prefer_remote=True)
 
     def list_remote_job_ids(self) -> list[str]:
         if not self.enabled:
