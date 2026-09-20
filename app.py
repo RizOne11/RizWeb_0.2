@@ -14,6 +14,7 @@ from flask import Flask, Response, abort, jsonify, redirect, render_template, re
 from werkzeug.utils import secure_filename
 
 from priceintel.io import read_catalog
+from puma_config import production_marketplace_ids, ui_config
 from puma_scouts.production import RunCancelled, run_sync
 
 BASE = Path(__file__).resolve().parent
@@ -346,7 +347,7 @@ def _start_next_queued():
             if jid not in _running_threads:
                 return
 _load_previous_jobs()
-def _ui_cfg():return json.loads((BASE/"config.json").read_text(encoding="utf-8"))
+def _ui_cfg():return ui_config(BASE/"config.json")
 @app.get("/healthz")
 def healthz():
     return jsonify({"ok": True, "service": "puma", "engine_build": ENGINE_BUILD, "execution_mode": _execution_mode()})
@@ -356,7 +357,7 @@ def index():
     c=_ui_cfg();return render_template("index.html",app_name=c.get("app_name","PUMA Platform"),app_version=c.get("app_version","v1.3"),brand_line=c.get("brand_line","Made by Пума (Чернявський А.)"))
 @app.get("/analysis")
 def analysis_page():
-    c=_ui_cfg();return render_template("analysis.html",marketplaces=c.get("marketplaces",[]),app_name=c.get("app_name","PUMA Platform"),app_version="v1.3",brand_line=c.get("brand_line","Made by Пума (Чернявський А.)"))
+    c=_ui_cfg();return render_template("analysis.html",marketplaces=c.get("marketplaces",[]),app_name=c.get("app_name","PUMA Platform"),app_version=c.get("app_version","v1.3"),brand_line=c.get("brand_line","Made by Пума (Чернявський А.)"))
 @app.get("/content")
 def content_page():
     c=_ui_cfg();return render_template("content.html",app_name=c.get("app_name","PUMA Platform"),app_version=c.get("app_version","v1.1"),brand_line=c.get("brand_line","Made by Пума (Чернявський А.)"))
@@ -382,8 +383,8 @@ def analyze():
     supplier=(request.form.get("supplier") or Path(f.filename).stem or "Не вказано").strip();
     try:limit=int((request.form.get("limit") or "30").strip())
     except ValueError:limit=30
-    limit=max(1,min(limit,int(os.getenv("MAX_PRODUCTS_PER_JOB","5000"))));selected=request.form.getlist("marketplaces") or ["prom","epicentr","hotline","web_shops"]
-    allowed={"prom","epicentr","hotline","web_shops"};selected=[x for x in selected if x in allowed] or list(allowed)
+    limit=max(1,min(limit,int(os.getenv("MAX_PRODUCTS_PER_JOB","5000"))));allowed=set(production_marketplace_ids(BASE/"config.json"));selected=request.form.getlist("marketplaces") or list(allowed)
+    selected=[x for x in selected if x in allowed] or list(allowed)
     jid=uuid.uuid4().hex[:12];d=JOBS_DIR/jid;d.mkdir(parents=True,exist_ok=True);fn=secure_filename(f.filename) or "catalog.xlsx";p=d/fn;f.save(p);fp=_job_fingerprint(p,supplier,selected,limit);dup=_find_active_duplicate(fp)
     if dup:shutil.rmtree(d,ignore_errors=True);return redirect(url_for("job_page",job_id=dup),code=303)
     set_job(jid,id=jid,status="queued",percent=0,current=0,total=0,message="Задача поставлена в чергу",filename=fn,supplier=supplier,marketplaces=selected,limit=limit,fingerprint=fp,created_at=time.time(),resume_available=False,engine_build=ENGINE_BUILD);_start_worker(jid);return redirect(url_for("job_page",job_id=jid),code=303)
