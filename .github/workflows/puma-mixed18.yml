@@ -1,0 +1,133 @@
+name: PUMA Real Mixed18 Catalog Gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [puma-homoglyph-hardening]
+    paths:
+      - '.github/workflows/puma-mixed18.yml'
+      - 'benchmarks/PUMA_mixed18_20260920.csv'
+      - 'benchmarks/.trigger-puma-mixed18'
+
+concurrency:
+  group: puma-mixed18-quality
+  cancel-in-progress: false
+
+jobs:
+  mixed18:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      PYTHONPATH: .
+      PUMA_SOURCE_WALL_TIMEOUT: "70"
+      PUMA_SOURCE_HARD_TIMEOUT: "140"
+      PUMA_PRODUCT_CONCURRENCY: "4"
+      PUMA_RUNTIME_CACHE_ENABLED: "1"
+      PUMA_RUNTIME_CACHE_PATH: "/tmp/puma-mixed18.sqlite"
+      PUMA_SERPER_CACHE_SECONDS: "2592000"
+      PUMA_IDENTITY_CACHE_SECONDS: "2592000"
+      PUMA_IDENTITY_SAVE_PROBABLE: "1"
+      PUMA_REFRESH_REPAIR_ENABLED: "1"
+      SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - name: Real Mixed18 discovery check
+        run: |
+          set -euo pipefail
+          test -n "${SERPER_API_KEY:-}"
+          rm -f /tmp/puma-mixed18.sqlite*
+          python - <<'PY'
+          import json, time
+          from pathlib import Path
+
+          from puma_scouts.lingua import fold_homoglyphs
+          from puma_scouts.production import read_missions, run_sync
+          from puma_scouts.query import generate_queries, identifier_in_text
+
+          inp = "benchmarks/PUMA_mixed18_20260920.csv"
+          missions = read_missions(inp, limit=18)
+          assert len(missions) == 18, len(missions)
+          assert len({m.article for m in missions}) == 18
+
+          leaks = {}
+          canonical = {}
+          for mission in missions:
+              queries = generate_queries(mission)
+              leaked = [q for q in queries if identifier_in_text(mission.article, q)]
+              if leaked:
+                  leaks[mission.article] = leaked
+              canonical[mission.article] = {
+                  "article": fold_homoglyphs(mission.article),
+                  "name": fold_homoglyphs(mission.source_data.get("name", "")),
+                  "queries": queries,
+              }
+
+          if leaks:
+              raise SystemExit("MIXED18_SUPPLIER_ARTICLE_QUERY_LEAK=" + json.dumps(leaks, ensure_ascii=False))
+
+          expected = {
+              "1060-ТE-Р038BL": "1060-te-p038bl",
+              "30360": "mcm",
+              "5860": "epcc2614",
+              "416235": "leb1-a123mg",
+              "162SW21СBLS": "162sw21cbls",
+              "173LS27HErXS85АA": "173ls27herxs85aa",
+              "BZ-425.М": "bz-425.m",
+              "2069180735": "2100x900x600",
+              "229260": "35x50cm",
+              "1006016": "mbs-4708",
+          }
+          missing = {}
+          for article, needle in expected.items():
+              row = canonical[article]
+              haystack = row["article"] + " " + row["name"]
+              if needle not in haystack:
+                  missing[article] = {"expected": needle, "actual": haystack}
+          if missing:
+              raise SystemExit("MIXED18_CANONICALIZATION_GAP=" + json.dumps(missing, ensure_ascii=False))
+
+          started = time.monotonic()
+          summary = run_sync(
+              inp,
+              "/tmp/mixed18.xlsx",
+              limit=18,
+              selected=["prom", "epicentr", "hotline", "web_shops"],
+              classic_output_path="/tmp/mixed18_classic.xlsx",
+              supplier="mixed18-homoglyph",
+          )
+          summary["wall_seconds"] = round(time.monotonic() - started, 2)
+          Path("/tmp/mixed18.json").write_text(
+              json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
+          )
+          Path("/tmp/mixed18_canonical.json").write_text(
+              json.dumps(canonical, ensure_ascii=False, indent=2), encoding="utf-8"
+          )
+
+          missing_products = [
+              {"article": p["article"], "name": p["name"]}
+              for p in summary.get("product_results", [])
+              if p.get("status") != "FOUND"
+          ]
+          print(f"PUMA_MIXED18_FOUND={summary.get('found_products')}/18", flush=True)
+          print(f"PUMA_MIXED18_OFFERS={summary.get('offers')}", flush=True)
+          print(f"PUMA_MIXED18_SECONDS={summary.get('wall_seconds')}", flush=True)
+          print(f"PUMA_MIXED18_SERPER={summary.get('serper_api_requests')}", flush=True)
+          print("PUMA_MIXED18_COVERAGE=" + json.dumps(summary.get("coverage_by_source", {}), ensure_ascii=False), flush=True)
+          print("PUMA_MIXED18_NOT_FOUND=" + json.dumps(missing_products, ensure_ascii=False), flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: puma-mixed18-${{ github.run_id }}
+          retention-days: 7
+          path: |
+            /tmp/mixed18.json
+            /tmp/mixed18_canonical.json
+            /tmp/mixed18.xlsx
+            /tmp/mixed18_classic.xlsx
+          if-no-files-found: warn
