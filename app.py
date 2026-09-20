@@ -1,4 +1,5 @@
 import csv
+from collections import deque
 import hashlib
 import hmac
 import json
@@ -88,6 +89,93 @@ def require_auth():
 _jobs = {}
 _lock = threading.Lock()
 _running_threads = set()
+_submission_times = deque()
+
+
+def _bounded_int_env(name, default, minimum=0, maximum=100000):
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+def _max_active_jobs():
+    # 0 keeps local/dev behaviour unlimited. Production sets an explicit cap.
+    return _bounded_int_env("PUMA_MAX_ACTIVE_JOBS", 0, 0, 16)
+
+
+def _max_outstanding_jobs():
+    # queued + running jobs. 0 disables the queue cap outside production.
+    return _bounded_int_env("PUMA_MAX_OUTSTANDING_JOBS", 0, 0, 1000)
+
+
+def _job_starts_per_minute():
+    return _bounded_int_env("PUMA_JOB_STARTS_PER_MINUTE", 0, 0, 1000)
+
+
+def _active_job_count():
+    with _lock:
+        return len(_running_threads)
+
+
+def _outstanding_job_count():
+    with _lock:
+        return sum(
+            1
+            for job in _jobs.values()
+            if str(job.get("status") or "") in {"queued", "running"}
+        )
+
+
+def _outstanding_limit_reached():
+    limit = _max_outstanding_jobs()
+    return bool(limit and _outstanding_job_count() >= limit)
+
+
+def _consume_job_start_rate():
+    limit = _job_starts_per_minute()
+    if not limit:
+        return True, 0
+
+    now = time.monotonic()
+    with _lock:
+        cutoff = now - 60.0
+        while _submission_times and _submission_times[0] <= cutoff:
+            _submission_times.popleft()
+        if len(_submission_times) >= limit:
+            retry_after = max(1, int(60 - (now - _submission_times[0])))
+            return False, retry_after
+        _submission_times.append(now)
+    return True, 0
+
+
+def _job_admission_response(message, retry_after=30):
+    if request.path.startswith("/api/"):
+        response = jsonify({"ok": False, "error": "job_capacity_limited", "message": message})
+    else:
+        response = render_template("error.html", message=message)
+    response = app.make_response((response, 429)) if not isinstance(response, Response) else response
+    response.status_code = 429
+    response.headers["Retry-After"] = str(max(1, int(retry_after)))
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.before_request
+def limit_job_start_rate():
+    if request.method != "POST":
+        return None
+    if request.endpoint not in {"analyze", "rerun_job", "resume_job"}:
+        return None
+    allowed, retry_after = _consume_job_start_rate()
+    if allowed:
+        return None
+    return _job_admission_response(
+        "Забагато запусків аналізу за короткий час. Спробуй ще раз трохи пізніше.",
+        retry_after,
+    )
+
 
 def allowed_file(name, allowed): return "." in name and name.rsplit(".",1)[1].lower() in allowed
 
@@ -135,8 +223,9 @@ def _thread_alive(jid):
     with _lock:return jid in _running_threads
 
 def worker(job_id,input_path,limit,selected_markets,supplier):
+    # _start_worker reserves the slot before starting the thread. Direct calls
+    # still register themselves for test/dev compatibility.
     with _lock:
-        if job_id in _running_threads:return
         _running_threads.add(job_id)
     d=JOBS_DIR/job_id
     xlsx=d/"PUMA_doPUMAgatel_market_report.xlsx"
@@ -178,14 +267,58 @@ def worker(job_id,input_path,limit,selected_markets,supplier):
             resume_available=checkpoint.exists(),engine_build=ENGINE_BUILD,
         )
     finally:
-        with _lock:_running_threads.discard(job_id)
+        with _lock:
+            _running_threads.discard(job_id)
+        _start_next_queued()
 
 def _start_worker(jid):
     j=get_job(jid)
-    if not j or _thread_alive(jid):return False
+    if not j:
+        return False
     p=JOBS_DIR/jid/j["filename"]
-    if not p.exists():return False
-    threading.Thread(target=worker,args=(jid,p,int(j["limit"]),list(j["marketplaces"]),j["supplier"]),daemon=True).start();return True
+    if not p.exists():
+        return False
+
+    with _lock:
+        if jid in _running_threads:
+            return True
+        active_limit=_max_active_jobs()
+        if active_limit and len(_running_threads)>=active_limit:
+            # The job remains queued and will be picked when a running job exits.
+            return True
+        _running_threads.add(jid)
+
+    try:
+        threading.Thread(
+            target=worker,
+            args=(jid,p,int(j["limit"]),list(j["marketplaces"]),j["supplier"]),
+            daemon=True,
+        ).start()
+        return True
+    except Exception:
+        with _lock:
+            _running_threads.discard(jid)
+        return False
+
+def _start_next_queued():
+    while True:
+        with _lock:
+            active_limit=_max_active_jobs()
+            if active_limit and len(_running_threads)>=active_limit:
+                return
+            queued=[
+                (float(job.get("created_at") or 0), jid)
+                for jid,job in _jobs.items()
+                if str(job.get("status") or "")=="queued" and jid not in _running_threads
+            ]
+        if not queued:
+            return
+        _,jid=min(queued)
+        if not _start_worker(jid):
+            return
+        with _lock:
+            if jid not in _running_threads:
+                return
 _load_previous_jobs()
 def _ui_cfg():return json.loads((BASE/"config.json").read_text(encoding="utf-8"))
 @app.get("/healthz")
@@ -215,6 +348,8 @@ def content_preview():
     c=_ui_cfg();shutil.rmtree(d,ignore_errors=True);return render_template("content_preview.html",rows=rows,supplier=supplier,app_version=c.get("app_version","v1.1"),brand_line=c.get("brand_line","Made by Пума (Чернявський А.)"))
 @app.post("/analyze")
 def analyze():
+    if _outstanding_limit_reached():
+        return _job_admission_response("Черга аналізів заповнена. Дочекайся завершення одного з активних завдань.")
     f=request.files.get("catalog")
     if not f or not f.filename:return render_template("error.html",message="Не вибрано файл каталогу."),400
     if not allowed_file(f.filename,ALLOWED_ANALYSIS_EXTENSIONS):return render_template("error.html",message="доПУМАгатель v1.3 приймає XLSX, CSV, YML та XML."),400
@@ -243,6 +378,8 @@ def job_status(job_id):
     return jsonify(safe)
 @app.post("/api/jobs/<job_id>/rerun")
 def rerun_job(job_id):
+    if _outstanding_limit_reached():
+        return _job_admission_response("Черга аналізів заповнена. Дочекайся завершення одного з активних завдань.")
     j=get_job(job_id)
     if not j:abort(404)
     src=JOBS_DIR/job_id/(j.get("filename") or "")
@@ -277,6 +414,8 @@ def download_classic_xlsx(job_id):
 def cancel_job(job_id):return jsonify({"ok":False,"message":"Production v1.3 runs bounded parallel products; cancel will return in the next build."}),409
 @app.post("/api/jobs/<job_id>/resume")
 def resume_job(job_id):
+    if _outstanding_limit_reached() and not _thread_alive(job_id):
+        return _job_admission_response("Черга аналізів заповнена. Дочекайся завершення одного з активних завдань.")
     j=get_job(job_id)
     if not j:abort(404)
     if j.get("status")=="done":return jsonify({"ok":False,"message":"Job already completed."}),409
