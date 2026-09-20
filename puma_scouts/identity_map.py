@@ -6,11 +6,12 @@ import os
 from typing import Iterable
 
 from puma_scouts.models import IdentityConfidence, ProductMission, ValidatedOffer, Verdict
+from puma_scouts.lingua import fold_homoglyphs
 from puma_scouts.runtime_cache import identity_cache_seconds, runtime_cache
 
 
 def _stable_text(value) -> str:
-    return " ".join(str(value or "").split()).strip().casefold()
+    return " ".join(fold_homoglyphs(value).split()).strip()
 
 
 def mission_identity_key(mission: ProductMission) -> str:
