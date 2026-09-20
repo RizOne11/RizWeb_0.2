@@ -84,9 +84,12 @@ def extract_identifiers(mission: ProductMission) -> list[str]:
     for key in _ID_KEYS:
         value = _clean(data.get(key))
         if value and _compact(value) != article_compact and _compact(value) not in {_compact(item) for item in found}:
-            found.append(fold_homoglyphs_preserve_case(value))
+            # Keep the marketplace-visible spelling. generate_queries() adds
+            # the canonical twin as a second query when homoglyph folding
+            # changes it.
+            found.append(value)
 
-    corpus = fold_homoglyphs(" ".join(_clean(v) for v in mission.source_data.values() if isinstance(v, (str, int))))
+    raw_corpus = " ".join(_clean(v) for v in mission.source_data.values() if isinstance(v, (str, int)))
     token_pattern = (
         r"\b"
         r"(?=[A-ZА-ЯІЇЄ0-9-]{4,}\b)"
@@ -94,9 +97,12 @@ def extract_identifiers(mission: ProductMission) -> list[str]:
         r"(?=[A-ZА-ЯІЇЄ0-9-]*[A-ZА-ЯІЇЄ])"
         r"[A-ZА-ЯІЇЄ0-9-]+\b"
     )
-    for token in re.findall(token_pattern, corpus.upper()):
-        if _compact(token) != article_compact and _compact(token) not in {_compact(item) for item in found}:
-            found.append(fold_homoglyphs_preserve_case(token))
+    # Original spelling comes first so Discovery can hit literal marketplace
+    # indexes; canonical spelling is still available through add().
+    for corpus in (raw_corpus, fold_homoglyphs_preserve_case(raw_corpus)):
+        for token in re.findall(token_pattern, corpus.upper()):
+            if _compact(token) != article_compact and _compact(token) not in {_compact(item) for item in found}:
+                found.append(token)
     return found[:12]
 
 
@@ -114,15 +120,22 @@ def generate_queries(mission: ProductMission) -> list[str]:
     queries: list[str] = []
 
     def add(value: Any) -> None:
-        value = _clean(value)
-        if mission.article and identifier_in_text(mission.article, value):
-            value = _without_identifier(value, mission.article)
-        value = fold_homoglyphs_preserve_case(value)
-        if not value:
+        raw = _clean(value)
+        if mission.article and identifier_in_text(mission.article, raw):
+            raw = _without_identifier(raw, mission.article)
+        if not raw:
             return
-        folded = value.casefold()
-        if folded not in {q.casefold() for q in queries}:
-            queries.append(value)
+
+        # Preserve the literal supplier/marketplace spelling and add a
+        # canonical twin only when homoglyph folding changes it. Search engines
+        # do not always treat Latin/Cyrillic lookalikes as equivalent.
+        for candidate in (raw, fold_homoglyphs_preserve_case(raw)):
+            candidate = _clean(candidate)
+            if not candidate:
+                continue
+            folded = candidate.casefold()
+            if folded not in {q.casefold() for q in queries}:
+                queries.append(candidate)
 
     # The descriptive name remains useful; only the supplier article is removed.
     # Add deterministic RU/UA lexical variants as separate Discovery queries.
