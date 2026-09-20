@@ -308,3 +308,98 @@ def test_kospet_t4_special_edition_exact_stays_confirmed():
     )
     assert checked.verdict == Verdict.PASS, checked
     assert checked.identity_confidence == IdentityConfidence.CONFIRMED, checked
+
+
+
+def test_classifier_detects_apparel_size_profile_from_mixed18_swimwear():
+    mission = ProductMission(
+        article="162SW21СBLS",
+        source_data={
+            "name": "Купальник закрытый с чашками Perfect Female beach comfort S Черный (162SW/21С/BL)",
+            "brand": "Perfect Female",
+        },
+    )
+    assert classify_category(mission) == "apparel_size_variant"
+
+
+@pytest.mark.parametrize(
+    "source_name,candidate",
+    [
+        (
+            "Купальник закрытый с чашками Perfect Female beach comfort S Черный",
+            "Купальник закрытый с чашками Perfect Female beach comfort M Черный",
+        ),
+        (
+            "Пижама Perfect Female Молочный M (186Pj-35)",
+            "Пижама Perfect Female Молочный XL (186Pj-35)",
+        ),
+        (
+            "Комплект белья Perfect Female Красный XS/85АA (173LS-27HE-r)",
+            "Комплект белья Perfect Female Красный S/85B (173LS-27HE-r)",
+        ),
+        (
+            "Бутсы футбольные OWAXX 180916 43 Красный",
+            "Бутсы футбольные OWAXX 180916 42 Красный",
+        ),
+    ],
+)
+def test_apparel_profile_rejects_neighbor_size_variants(source_name, candidate):
+    mission = ProductMission(
+        article="ROW-APPAREL",
+        source_data={"name": source_name, "brand": source_name.split()[1]},
+    )
+    checked = validate_offer(mission, _offer(mission, candidate, brand=mission.source_data["brand"]))
+
+    assert checked.verdict != Verdict.PASS, checked
+    assert any("apparel size mismatch" in reason.casefold() for reason in checked.conflicts), checked
+
+
+@pytest.mark.parametrize(
+    "source_name,candidate",
+    [
+        (
+            "Купальник закрытый с чашками Perfect Female beach comfort S Черный",
+            "Купальник Perfect Female beach comfort S Черный",
+        ),
+        (
+            "Пижама Perfect Female Молочный M (186Pj-35)",
+            "Пижама Perfect Female Молочный M (186Pj-35)",
+        ),
+        (
+            "Комплект белья Perfect Female Красный XS/85АA (173LS-27HE-r)",
+            "Комплект белья Perfect Female Красный XS/85AA (173LS-27HE-r)",
+        ),
+        (
+            "Бутсы футбольные OWAXX 180916 43 Красный",
+            "Бутсы футбольные OWAXX 180916 43 Красный",
+        ),
+    ],
+)
+def test_apparel_profile_preserves_same_size_variants(source_name, candidate):
+    brand = "Perfect Female" if "Perfect Female" in source_name else "OWAXX"
+    mission = ProductMission(
+        article="ROW-APPAREL",
+        source_data={"name": source_name, "brand": brand},
+    )
+    checked = validate_offer(mission, _offer(mission, candidate, brand=brand))
+
+    assert not any("apparel size mismatch" in reason.casefold() for reason in checked.conflicts), checked
+
+
+def test_apparel_profile_missing_size_downgrades_confirmation_not_rejects():
+    mission = ProductMission(
+        article="ROW-APPAREL",
+        source_data={
+            "name": "Куртка Intruder Easy softshell XL Хаки",
+            "brand": "Intruder",
+            "model": "Easy",
+        },
+    )
+    checked = validate_offer(
+        mission,
+        _offer(mission, "Куртка Intruder Easy softshell Хаки", brand="Intruder"),
+    )
+
+    assert checked.verdict == Verdict.PASS, checked
+    assert checked.identity_confidence == IdentityConfidence.PROBABLE, checked
+    assert any("apparel size" in evidence.casefold() for evidence in checked.positive_evidence), checked
