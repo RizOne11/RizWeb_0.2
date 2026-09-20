@@ -88,9 +88,12 @@ def _display_diagonal(text:str)->str|None:
     raw=str(text or "").casefold();m=re.search(r"\b(2[0-9]|3[0-9]|4[0-9]|5[0-9]|6[0-9]|7[0-9]|8[0-9]|9[0-9]|1[0-2][0-9])\s*(?:дюйм\w*|inch(?:es)?|\")?\s*$",raw,re.I);return "diag:"+m.group(1) if m else None
 
 def _sizes(text:str)->set[str]:
-    raw=str(text or "").casefold();out=set()
+    raw=norm(text);out=set()
+    unit_map={"мм":"mm","см":"cm","мл":"ml","кг":"kg"}
+    for dims,unit in re.findall(r"(?<!\d)(\d{1,4}x\d{1,4}(?:x\d{1,4})?)\s*(mm|мм|cm|см)?\b",raw,re.I):
+        out.add(dims.casefold() + unit_map.get(unit.casefold(), unit.casefold()))
     for value in re.findall(r"(?<!\d)(\d{1,3}(?:[.,]\d+)?)\s*(?:inch|inches|дюйм\w*|\")",raw,re.I):out.add(value.replace(",",".")+"in")
-    for value,unit in re.findall(r"(?<!\d)(\d+(?:[.,]\d+)?)\s*(mm|мм|cm|см|ml|мл|kg|кг)\b",raw,re.I):out.add(value.replace(",",".")+unit.casefold())
+    for value,unit in re.findall(r"(?<!\d)(\d+(?:[.,]\d+)?)\s*(mm|мм|cm|см|ml|мл|kg|кг)\b",raw,re.I):out.add(value.replace(",",".")+unit_map.get(unit.casefold(),unit.casefold()))
     for value in re.findall(r"\b(?:розмір|размер|size)\s*[:#-]?\s*(\d{1,3}(?:[.,]\d+)?)\b",raw,re.I):out.add("size:"+value.replace(",","."))
     for width,profile,rim in re.findall(r"(?<!\d)(\d{3})\s*/\s*(\d{2})\s*r\s*(\d{2})(?!\d)",raw,re.I):out.add(f"tire:{width}/{profile}r{rim}")
     if entity_type(raw) in {"television","monitor"}:
@@ -106,6 +109,10 @@ def _core_tokens(text:str)->set[str]:
         if re.fullmatch(r"\d{1,4}(?:gb|гб|tb|тб)",c,re.I):continue
         if re.fullmatch(r"20\d{2}",c) or re.fullmatch(r"\d+(?:hz|гц)?",c):continue
         if re.fullmatch(r"\d+(?:a|v|w|mah|ah|wh|hz|гц|мм|mm|см|cm|мл|ml|кг|kg|вт|квт|ква)",c,re.I):continue
+        # Multi-dimensional measurements belong to the size channel, not model
+        # identity. Formatting such as 2100x900x600 mm vs 2100x900x600mm must
+        # never become a product-family conflict.
+        if re.fullmatch(r"\d{1,4}x\d{1,4}(?:x\d{1,4})?(?:mm|мм|cm|см)?",c,re.I):continue
         if re.search(r"[a-zа-яіїє]",c,re.I) and re.search(r"\d",c):out.add(c)
 
     # Normalize split model families such as "SGN 125" -> "sgn125".
