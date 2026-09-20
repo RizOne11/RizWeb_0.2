@@ -70,7 +70,7 @@ def _unauthorized_response():
 
 @app.before_request
 def require_auth():
-    if request.endpoint == "static":
+    if request.endpoint == "static" or request.path == "/healthz":
         return None
     if not _auth_required():
         return None
@@ -188,6 +188,10 @@ def _start_worker(jid):
     threading.Thread(target=worker,args=(jid,p,int(j["limit"]),list(j["marketplaces"]),j["supplier"]),daemon=True).start();return True
 _load_previous_jobs()
 def _ui_cfg():return json.loads((BASE/"config.json").read_text(encoding="utf-8"))
+@app.get("/healthz")
+def healthz():
+    return jsonify({"ok": True, "service": "puma", "engine_build": ENGINE_BUILD})
+
 @app.get("/")
 def index():
     c=_ui_cfg();return render_template("index.html",app_name=c.get("app_name","PUMA Platform"),app_version=c.get("app_version","v1.3"),brand_line=c.get("brand_line","Made by Пума (Чернявський А.)"))
