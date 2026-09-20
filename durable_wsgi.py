@@ -88,7 +88,12 @@ def _load_remote_jobs() -> None:
             continue
 
         status = str(data.get("status") or "")
-        if status in {"queued", "running"}:
+        if status == "cancelling":
+            data["status"] = "cancelled"
+            data["message"] = "Аналіз було скасовано."
+            data["resume_available"] = bool(data.get("resume_available"))
+            _STORE.save_status(job_id, data, force=True)
+        elif status in {"queued", "running"}:
             filename = str(data.get("filename") or "").strip()
             input_path = _STORE.ensure_file(job_id, Path(filename).name) if filename else None
             if data.get("resume_available"):
