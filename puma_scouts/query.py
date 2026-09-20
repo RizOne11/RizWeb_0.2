@@ -69,6 +69,16 @@ def _without_identifier(text: str, identifier: str) -> str:
     return _clean(value)
 
 
+def _measurement_like_identifier(value: str) -> bool:
+    canonical = fold_homoglyphs(value)
+    compact = re.sub(r"\s+", "", canonical)
+    return bool(re.fullmatch(
+        r"\d{1,4}x\d{1,4}(?:x\d{1,4})?(?:mm|мм|cm|см)?",
+        compact,
+        re.I,
+    ))
+
+
 def extract_identifiers(mission: ProductMission) -> list[str]:
     """Return independent external identifiers, explicitly excluding row article.
 
@@ -101,7 +111,11 @@ def extract_identifiers(mission: ProductMission) -> list[str]:
     # indexes; canonical spelling is still available through add().
     for corpus in (raw_corpus, fold_homoglyphs_preserve_case(raw_corpus)):
         for token in re.findall(token_pattern, corpus.upper()):
-            if _compact(token) != article_compact and _compact(token) not in {_compact(item) for item in found}:
+            if (
+                _compact(token) != article_compact
+                and not _measurement_like_identifier(token)
+                and _compact(token) not in {_compact(item) for item in found}
+            ):
                 found.append(token)
     return found[:12]
 
