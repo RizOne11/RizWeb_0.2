@@ -9,6 +9,7 @@ from .identity_map import load_discovery_sources,remember_discovery_sources
 from .models import IdentityConfidence,ProductMission,Verdict,ScanHealth,ScanReport
 from .price_score import assess_price_market
 from .scouts.base import repair_discovery_scope
+from .serper import serper_usage_snapshot
 
 
 class RunCancelled(RuntimeError):
@@ -510,6 +511,12 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
     serper_clients=[getattr(s,"serper",None) for s in scout_pool if getattr(s,"serper",None) is not None]
     serper_api_requests=sum(int(getattr(s,"api_requests",0) or 0) for s in serper_clients)
     serper_cache_hits=sum(int(getattr(s,"cache_hits",0) or 0) for s in serper_clients)
+    serper_usage=serper_usage_snapshot(serper_api_requests,serper_cache_hits)
+    cost_accounting={
+        "serper":serper_usage,
+        "estimated_total_usd":serper_usage["estimated_cost_usd"],
+        "currency":"USD",
+    }
     serper_configured=bool(os.getenv("SERPER_API_KEY","").strip())
     serper_enabled=bool(serper_clients) and all(bool(getattr(s,"enabled",False)) for s in serper_clients)
     serper_disabled_reasons=sorted({str(getattr(s,"disabled_reason","") or "") for s in serper_clients if getattr(s,"disabled_reason","")})
@@ -533,6 +540,7 @@ async def run(input_path:str,output_path:str,limit:int|None=None,selected:list[s
         "repair_products_attempted":repair_products_attempted,
         "repair_products_rescued":repair_products_rescued,
         "serper_api_requests":serper_api_requests,"serper_cache_hits":serper_cache_hits,
+        "cost_accounting":cost_accounting,
         "serper_configured":serper_configured,"serper_enabled":serper_enabled,
         "serper_disabled_reasons":serper_disabled_reasons,
         "source_discovery":source_discovery,
