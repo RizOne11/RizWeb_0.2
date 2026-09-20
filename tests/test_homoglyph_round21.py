@@ -91,7 +91,7 @@ def test_query_removes_supplier_article_even_when_scripts_are_mixed():
     assert any("129x90" in query for query in queries), queries
 
 
-def test_outgoing_query_canonicalizes_mixed_model_without_touching_normal_prose():
+def test_outgoing_query_keeps_literal_and_canonical_mixed_model_variants():
     mission = ProductMission(
         article="ROW-LEB",
         source_data={
@@ -101,8 +101,8 @@ def test_outgoing_query_canonicalizes_mixed_model_without_touching_normal_prose(
         },
     )
     queries = generate_queries(mission)
+    assert any("Змішувач" in query and "LEB1-А123MG" in query for query in queries), queries
     assert any("Змішувач" in query and "LEB1-A123MG" in query for query in queries), queries
-    assert all("А123MG" not in query for query in queries), queries
 
 
 def test_identity_key_and_version_are_stable_across_homoglyph_variants():
@@ -152,3 +152,92 @@ def test_punctuation_separated_homoglyph_code_segments_are_folded():
 
 def test_size_abbreviation_without_digits_is_not_treated_as_identifier_code():
     assert fold_homoglyphs("р.S") == "р.s"
+
+
+def test_perfect_female_mixed_size_query_keeps_literal_and_canonical_forms():
+    mission = ProductMission(
+        article="173LS27HErXS85АA",
+        source_data={
+            "name": "Комплект белья с высокой посадкой Perfect Female Красный XS/85АA (173LS-27HE-r)",
+            "brand": "Perfect Female",
+        },
+    )
+    queries = generate_queries(mission)
+    assert any("85АA" in query for query in queries), queries
+    assert any("85AA" in query for query in queries), queries
+    assert all(not identifier_in_text(mission.article, query) for query in queries), queries
+
+
+def test_commercial_old_price_cannot_become_model_identity():
+    mission = ProductMission(
+        article="2069180735",
+        source_data={
+            "name": "Металлический стеллаж Emby Light Series 2100х900x600 мм 5 полок ДСП до 100 кг Белый",
+            "brand": "Emby",
+            "old_price": "4799.0",
+        },
+    )
+    checked = validate_offer(
+        mission,
+        _offer(
+            mission,
+            "Металевий стелаж Emby Light Series 2100х900x600 мм 5 полиць ДСП до 100 кг Білий",
+        ),
+    )
+    assert checked.verdict == Verdict.PASS, checked
+    assert not any("emby4799" in reason for reason in checked.conflicts), checked
+
+
+def test_multidimensional_size_formatting_matches_but_real_dimension_change_conflicts():
+    mission = ProductMission(
+        article="2069180735",
+        source_data={
+            "name": "Стеллаж Emby Light Series 2100 х 900 × 600 мм Белый",
+            "brand": "Emby",
+        },
+    )
+    same = validate_offer(
+        mission,
+        _offer(mission, "Стелаж Emby Light Series 2100x900x600мм Білий"),
+    )
+    wrong = validate_offer(
+        mission,
+        _offer(mission, "Стелаж Emby Light Series 2100x900x500 мм Білий"),
+    )
+    assert same.verdict == Verdict.PASS, same
+    assert wrong.verdict != Verdict.PASS, wrong
+    assert any("size/volume mismatch" in reason for reason in wrong.conflicts), wrong
+
+
+def test_perfect_female_real_mixed_script_offer_still_passes():
+    mission = ProductMission(
+        article="173LS27HErXS85АA",
+        source_data={
+            "name": "Комплект белья с высокой посадкой Perfect Female Красный XS/85АA (173LS-27HE-r)",
+            "brand": "Perfect Female",
+        },
+    )
+    checked = validate_offer(
+        mission,
+        _offer(
+            mission,
+            "Комплект білизни з високою посадкою Perfect Female Червоний XS/85АA (173LS-27HE-r) D12-2026",
+        ),
+    )
+    assert checked.verdict == Verdict.PASS, checked
+
+
+def test_degrenne_dimension_only_false_positive_stays_rejected():
+    mission = ProductMission(
+        article="229260",
+        source_data={
+            "name": "Набор салфеток 2 шт Degrenne Paris Linge de Table 35x50см Коралловый 229260",
+            "brand": "Degrenne Paris",
+        },
+    )
+    checked = validate_offer(
+        mission,
+        _offer(mission, "Lefard Серветка Home Textile Peeps 35x50см (732-287)"),
+    )
+    assert checked.verdict != Verdict.PASS, checked
+    assert any("brand not confirmed" in reason for reason in checked.conflicts), checked
