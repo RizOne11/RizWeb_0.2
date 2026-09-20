@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from puma_scouts.models import ProductMission
-from puma_scouts.lingua import query_language_variants
+from puma_scouts.lingua import canonical_compact, fold_homoglyphs, identity_pattern, query_language_variants
 
 _ID_KEYS = ("ean", "gtin", "mpn", "model", "vendorcode", "vendor_code", "sku", "code")
 _NAME_KEYS = ("name", "title", "название", "назва")
@@ -17,7 +17,7 @@ def _clean(value: Any) -> str:
 
 
 def _compact(value: Any) -> str:
-    return re.sub(r"[^0-9A-Za-zА-Яа-яІіЇїЄєҐґ]", "", str(value or "")).casefold()
+    return canonical_compact(value)
 
 
 def _first(data: dict[str, Any], keys: Iterable[str]) -> str | None:
@@ -30,11 +30,7 @@ def _first(data: dict[str, Any], keys: Iterable[str]) -> str | None:
 
 
 def _identifier_pattern(value: str) -> re.Pattern[str] | None:
-    parts = re.findall(r"[0-9A-Za-zА-Яа-яІіЇїЄєҐґ]+", str(value or ""), re.I)
-    if not parts:
-        return None
-    joined = r"[\s._/+:-]*".join(re.escape(part) for part in parts)
-    return re.compile(rf"(?<!\w){joined}(?!\w)", re.I)
+    return identity_pattern(value)
 
 
 def identifier_in_text(identifier: str, text: str) -> bool:
@@ -87,10 +83,10 @@ def extract_identifiers(mission: ProductMission) -> list[str]:
 
     for key in _ID_KEYS:
         value = _clean(data.get(key))
-        if value and _compact(value) != article_compact and value not in found:
-            found.append(value)
+        if value and _compact(value) != article_compact and _compact(value) not in {_compact(item) for item in found}:
+            found.append(fold_homoglyphs(value))
 
-    corpus = " ".join(_clean(v) for v in mission.source_data.values() if isinstance(v, (str, int)))
+    corpus = fold_homoglyphs(" ".join(_clean(v) for v in mission.source_data.values() if isinstance(v, (str, int))))
     token_pattern = (
         r"\b"
         r"(?=[A-ZА-ЯІЇЄ0-9-]{4,}\b)"
@@ -99,8 +95,8 @@ def extract_identifiers(mission: ProductMission) -> list[str]:
         r"[A-ZА-ЯІЇЄ0-9-]+\b"
     )
     for token in re.findall(token_pattern, corpus.upper()):
-        if _compact(token) != article_compact and token not in found:
-            found.append(token)
+        if _compact(token) != article_compact and _compact(token) not in {_compact(item) for item in found}:
+            found.append(fold_homoglyphs(token))
     return found[:12]
 
 
@@ -121,6 +117,7 @@ def generate_queries(mission: ProductMission) -> list[str]:
         value = _clean(value)
         if mission.article and identifier_in_text(mission.article, value):
             value = _without_identifier(value, mission.article)
+        value = fold_homoglyphs(value)
         if not value:
             return
         folded = value.casefold()
