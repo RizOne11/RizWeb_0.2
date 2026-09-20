@@ -61,12 +61,22 @@ def set_job(job_id: str, **kwargs):
         _STORE.save_status(
             job_id,
             data,
-            force=status in {"queued", "done", "error", "interrupted"},
+            force=status in {"queued", "done", "error", "interrupted", "cancelling", "cancelled"},
         )
 
 
 def get_job(job_id: str):
-    data = _original_get_job(job_id)
+    data = None
+    if _STORE.enabled and legacy._execution_mode() == "web":
+        # The worker owns execution, so the web process must not trust its
+        # cached local status. Poll durable storage for current progress.
+        data = _STORE.load_remote_status(job_id)
+        if data is not None:
+            with legacy._lock:
+                legacy._jobs[job_id] = dict(data)
+
+    if data is None:
+        data = _original_get_job(job_id)
     if data is None and _STORE.enabled:
         data = _STORE.load_status(job_id)
         if data is not None:
@@ -81,13 +91,21 @@ def get_job(job_id: str):
 def _load_remote_jobs() -> None:
     if not _STORE.enabled:
         return
+    mode = legacy._execution_mode()
     auto_resume: list[str] = []
     for job_id in _STORE.list_remote_job_ids():
-        data = _STORE.load_status(job_id)
+        data = _STORE.load_remote_status(job_id)
         if not data:
             continue
 
         status = str(data.get("status") or "")
+        if mode == "web":
+            # The web tier is a control plane only. Preserve worker-owned
+            # queued/running/cancelling state exactly as stored.
+            _original_set_job(job_id, **data)
+            with legacy._lock:
+                legacy._jobs[job_id] = dict(data)
+            continue
         if status == "cancelling":
             data["status"] = "cancelled"
             data["message"] = "Аналіз було скасовано."
@@ -143,8 +161,33 @@ def _storage_is_healthy() -> bool:
 
 # Route functions and workers resolve these globals from the legacy module at
 # runtime, so replacing them here upgrades the existing app without duplicating it.
+def _refresh_web_control_plane_statuses() -> None:
+    if not (_STORE.enabled and legacy._execution_mode() == "web"):
+        return
+    with legacy._lock:
+        job_ids = [
+            job_id
+            for job_id, data in legacy._jobs.items()
+            if str(data.get("status") or "") in {"queued", "running", "cancelling"}
+        ]
+    for job_id in job_ids:
+        data = _STORE.load_remote_status(job_id)
+        if data is not None:
+            with legacy._lock:
+                legacy._jobs[job_id] = dict(data)
+
+
+_original_outstanding_job_count = legacy._outstanding_job_count
+
+
+def outstanding_job_count() -> int:
+    _refresh_web_control_plane_statuses()
+    return _original_outstanding_job_count()
+
+
 legacy.set_job = set_job
 legacy.get_job = get_job
+legacy._outstanding_job_count = outstanding_job_count
 _load_remote_jobs()
 
 _startup_storage_healthy = _storage_is_healthy()
