@@ -1,5 +1,6 @@
 import csv
 import hashlib
+import hmac
 import json
 import os
 import shutil
@@ -8,7 +9,7 @@ import time
 import uuid
 from pathlib import Path
 
-from flask import Flask, abort, jsonify, redirect, render_template, request, send_file, url_for
+from flask import Flask, Response, abort, jsonify, redirect, render_template, request, send_file, url_for
 from werkzeug.utils import secure_filename
 
 from priceintel.io import read_catalog
@@ -24,6 +25,66 @@ ENGINE_BUILD = (os.getenv("RENDER_GIT_COMMIT") or "dev")[:12]
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
+
+
+def _env_flag(name, default="0"):
+    return os.getenv(name, default).strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _auth_token():
+    return os.getenv("PUMA_AUTH_TOKEN", "").strip()
+
+
+def _auth_user():
+    return os.getenv("PUMA_AUTH_USER", "puma").strip() or "puma"
+
+
+def _auth_required():
+    return _env_flag("PUMA_REQUIRE_AUTH") or bool(_auth_token())
+
+
+def _request_token():
+    header = (request.headers.get("Authorization") or "").strip()
+    if header.casefold().startswith("bearer "):
+        return header[7:].strip()
+
+    basic = request.authorization
+    if basic and (basic.type or "").casefold() == "basic":
+        expected_user = _auth_user()
+        if hmac.compare_digest(str(basic.username or ""), expected_user):
+            return str(basic.password or "")
+
+    return (request.headers.get("X-PUMA-Token") or "").strip()
+
+
+def _unauthorized_response():
+    if request.path.startswith("/api/"):
+        response = jsonify({"ok": False, "error": "authentication_required"})
+    else:
+        response = Response("Authentication required", status=401, mimetype="text/plain")
+    response.status_code = 401
+    response.headers["WWW-Authenticate"] = 'Basic realm="PUMA", charset="UTF-8"'
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.before_request
+def require_auth():
+    if request.endpoint == "static":
+        return None
+    if not _auth_required():
+        return None
+
+    expected = _auth_token()
+    if not expected:
+        if request.path.startswith("/api/"):
+            return jsonify({"ok": False, "error": "auth_not_configured"}), 503
+        return Response("Authentication is required but not configured.", status=503, mimetype="text/plain")
+
+    supplied = _request_token()
+    if supplied and hmac.compare_digest(supplied, expected):
+        return None
+    return _unauthorized_response()
 _jobs = {}
 _lock = threading.Lock()
 _running_threads = set()
