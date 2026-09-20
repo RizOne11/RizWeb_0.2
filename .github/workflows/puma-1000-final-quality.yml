@@ -3,7 +3,7 @@ name: PUMA 1000 Final Quality Gate
 on:
   workflow_dispatch:
   push:
-    branches: [puma-performance-recovery]
+    branches: [puma-performance-recovery, puma-homoglyph-hardening]
     paths:
       - 'benchmarks/.trigger-puma-1000-final'
 
@@ -33,8 +33,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: puma-performance-recovery
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
