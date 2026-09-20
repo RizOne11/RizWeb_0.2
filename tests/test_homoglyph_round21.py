@@ -142,3 +142,13 @@ def test_pure_cyrillic_alphanumeric_units_and_bundle_notation_are_not_overfolded
 def test_mixed_script_normal_words_are_not_overtransliterated():
     assert fold_homoglyphs("Cеро-розовый") == "cеро-розовый"
     assert fold_homoglyphs("186Pj35Кофта") == "186pj35кофта"
+
+
+def test_punctuation_separated_homoglyph_code_segments_are_folded():
+    assert fold_homoglyphs("BZ-425.М") == "bz-425.m"
+    assert fold_homoglyphs("OLS-PL-30.К") == "ols-pl-30.k"
+    assert identity_pattern("BZ-425.М").search("Дорожка Abarqs BZ-425M Black")
+
+
+def test_size_abbreviation_without_digits_is_not_treated_as_identifier_code():
+    assert fold_homoglyphs("р.S") == "р.s"
