@@ -4,19 +4,19 @@ import re
 from typing import Any
 
 from puma_scouts.models import IdentityConfidence, Marketplace, Offer, ProductMission, ValidatedOffer, Verdict
-from puma_scouts.lingua import brand_aliases, fold_ru_ua_tokens
+from puma_scouts.lingua import brand_aliases, canonical_compact, fold_homoglyphs, fold_ru_ua_tokens, identity_pattern
 from puma_scouts.query import article_is_published, extract_identifiers, identifier_in_text
 from puma_scouts.variant_engine import explicit_model_agreement, generation_confirmation, named_generations, signature, variant_conflicts
 
 
 def _norm(value: Any) -> str:
-    text = fold_ru_ua_tokens(str(value or "").casefold())
+    text = fold_ru_ua_tokens(fold_homoglyphs(value))
     text = re.sub(r"[^\w]+", " ", text, flags=re.UNICODE)
     return re.sub(r"\s+", " ", text).strip()
 
 
 def _compact(value: Any) -> str:
-    return re.sub(r"[^\w]", "", str(value or "").casefold(), flags=re.UNICODE)
+    return canonical_compact(value)
 
 
 def _tokens(value: Any) -> set[str]:
@@ -46,21 +46,14 @@ def _explicit(mission: ProductMission, keys: set[str]) -> str | None:
 def _model_regex(expected: str | None) -> re.Pattern[str] | None:
     if not expected:
         return None
-    raw = str(expected).casefold().strip()
-    parts = re.findall(r"[a-zа-яіїє0-9]+", raw, re.I)
-    if not parts:
-        return None
-    if len(parts) == 1:
-        return re.compile(re.escape(parts[0]), re.I)
-    joined = r"[\s._/+:-]*".join(re.escape(p) for p in parts)
-    return re.compile(rf"(?<!\w){joined}(?!\w)", re.I)
+    return identity_pattern(expected)
 
 
 def _model_match(expected: str | None, offer_text: str) -> bool:
     if not expected:
         return False
     pattern = _model_regex(expected)
-    if pattern and pattern.search(str(offer_text or "").casefold()):
+    if pattern and pattern.search(str(offer_text or "")):
         return True
     parts = [t for t in _norm(expected).split() if t]
     on = _norm(offer_text)
@@ -120,11 +113,12 @@ def _token_before_model(text: str, model: str | None) -> str | None:
     pattern = _model_regex(model)
     if not pattern:
         return None
-    match = pattern.search(str(text or "").casefold())
+    raw = str(text or "")
+    match = pattern.search(raw)
     if not match:
         return None
-    prefix = str(text or "")[:match.start()]
-    words = re.findall(r"[a-zа-яіїє0-9]+", prefix.casefold(), re.I)
+    prefix = fold_homoglyphs(raw[:match.start()])
+    words = re.findall(r"[a-zа-яіїє0-9]+", prefix, re.I)
     return words[-1] if words else None
 
 
