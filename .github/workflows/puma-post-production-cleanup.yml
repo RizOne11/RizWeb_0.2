@@ -1,0 +1,25 @@
+name: PUMA Post Production Cleanup
+
+on:
+  push:
+    branches: [puma-post-production-cleanup]
+  workflow_dispatch:
+
+jobs:
+  cleanup-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt pytest
+      - name: Config v2 regressions
+        run: pytest -q tests/test_config_v2.py
+      - name: Compile production modules
+        run: python -m compileall -q app.py durable_wsgi.py puma_config.py puma_job_store.py puma_scouts legacy
+      - name: Full regression suite
+        run: pytest -q tests
