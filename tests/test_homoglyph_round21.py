@@ -2,7 +2,7 @@ from puma_scouts.category_profiles import _norm as category_norm
 from puma_scouts.identity_map import mission_identity_key, mission_identity_version
 from puma_scouts.lingua import fold_homoglyphs, identity_pattern
 from puma_scouts.models import Marketplace, Offer, ProductMission, Verdict
-from puma_scouts.query import generate_queries, identifier_in_text
+from puma_scouts.query import extract_identifiers, generate_queries, identifier_in_text
 from puma_scouts.validator import validate_offer
 from puma_scouts.validator_base import _brand_match
 from puma_scouts.variant_engine import explicit_model_agreement
@@ -241,3 +241,16 @@ def test_degrenne_dimension_only_false_positive_stays_rejected():
     )
     assert checked.verdict != Verdict.PASS, checked
     assert any("brand not confirmed" in reason for reason in checked.conflicts), checked
+
+
+def test_dimensions_never_become_strong_external_identifiers():
+    mission = ProductMission(
+        article="ROW-DIM",
+        source_data={
+            "name": "Стеллаж Example 2100х900x600 мм и салфетка 35x50см",
+            "brand": "Example",
+        },
+    )
+    identifiers = extract_identifiers(mission)
+    assert all("2100" not in value for value in identifiers), identifiers
+    assert all("35X50" not in value.upper() for value in identifiers), identifiers
