@@ -3,9 +3,10 @@ name: PUMA Recovery 13 Quality Gate
 on:
   workflow_dispatch:
   push:
-    branches: [puma-performance-recovery]
+    branches: [puma-performance-recovery, puma-homoglyph-hardening]
     paths:
       - 'benchmarks/.trigger-puma-recovery13'
+      - '.github/workflows/puma-recovery13.yml'
 
 concurrency:
   group: puma-recovery13-quality
@@ -33,8 +34,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: puma-performance-recovery
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
