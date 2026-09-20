@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from puma_scouts.models import ProductMission
-from puma_scouts.lingua import canonical_compact, fold_homoglyphs, identity_pattern, query_language_variants
+from puma_scouts.lingua import canonical_compact, fold_homoglyphs, fold_homoglyphs_preserve_case, identity_pattern, query_language_variants
 
 _ID_KEYS = ("ean", "gtin", "mpn", "model", "vendorcode", "vendor_code", "sku", "code")
 _NAME_KEYS = ("name", "title", "название", "назва")
@@ -84,7 +84,7 @@ def extract_identifiers(mission: ProductMission) -> list[str]:
     for key in _ID_KEYS:
         value = _clean(data.get(key))
         if value and _compact(value) != article_compact and _compact(value) not in {_compact(item) for item in found}:
-            found.append(fold_homoglyphs(value))
+            found.append(fold_homoglyphs_preserve_case(value))
 
     corpus = fold_homoglyphs(" ".join(_clean(v) for v in mission.source_data.values() if isinstance(v, (str, int))))
     token_pattern = (
@@ -96,7 +96,7 @@ def extract_identifiers(mission: ProductMission) -> list[str]:
     )
     for token in re.findall(token_pattern, corpus.upper()):
         if _compact(token) != article_compact and _compact(token) not in {_compact(item) for item in found}:
-            found.append(fold_homoglyphs(token))
+            found.append(fold_homoglyphs_preserve_case(token))
     return found[:12]
 
 
@@ -117,7 +117,7 @@ def generate_queries(mission: ProductMission) -> list[str]:
         value = _clean(value)
         if mission.article and identifier_in_text(mission.article, value):
             value = _without_identifier(value, mission.article)
-        value = fold_homoglyphs(value)
+        value = fold_homoglyphs_preserve_case(value)
         if not value:
             return
         folded = value.casefold()
