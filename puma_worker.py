@@ -35,9 +35,14 @@ def sync_once(runtime=None, legacy=None) -> int:
         return 0
 
     seen = 0
-    for job_id in store.list_remote_job_ids():
+    job_ids = store.list_remote_job_ids()
+    if getattr(store, "last_error", None):
+        raise RuntimeError("Durable storage job listing failed")
+    for job_id in job_ids:
         data = store.load_remote_status(job_id)
         if not data:
+            if getattr(store, "last_error", None):
+                raise RuntimeError("Durable storage status read failed")
             continue
         seen += 1
         status = str(data.get("status") or "")

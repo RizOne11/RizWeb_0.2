@@ -13,6 +13,19 @@ _original_set_job = legacy.set_job
 _original_get_job = legacy.get_job
 
 
+class DurableStorageError(RuntimeError):
+    """A job transition could not be persisted safely."""
+
+
+def _storage_failure(job_id: str, data: dict, operation: str) -> None:
+    # Keep failures visible locally and, when possible, remotely. Do not expose
+    # provider exception details (which can contain endpoint/credential data).
+    failed = dict(data, status="error", message=f"Durable storage: {operation} failed.")
+    _original_set_job(job_id, **failed)
+    _STORE.save_status(job_id, failed, force=True)
+    raise DurableStorageError(failed["message"])
+
+
 def _restore_job_files(job_id: str, data: dict) -> None:
     if not _STORE.enabled:
         return
@@ -31,23 +44,25 @@ def _restore_job_files(job_id: str, data: dict) -> None:
 
 
 def set_job(job_id: str, **kwargs):
-    _original_set_job(job_id, **kwargs)
     data = _original_get_job(job_id) or {}
+    data.update(kwargs)
     status = str(data.get("status") or "")
 
     if _STORE.enabled:
         # The original catalog is required for one-click reruns after a deploy.
         if status == "queued" and data.get("filename"):
             source = legacy.JOBS_DIR / job_id / Path(str(data["filename"])).name
-            _STORE.upload_file(job_id, source)
+            if not _STORE.upload_file(job_id, source):
+                _storage_failure(job_id, data, "input upload")
 
         # Mirror the per-product checkpoint before the running status is synced.
         # A replacement instance can then continue the same job instead of
         # throwing away already completed products.
-        if status == "running":
+        if status in {"running", "error", "interrupted", "cancelling", "cancelled"}:
             checkpoint = legacy.JOBS_DIR / job_id / "checkpoint.json"
             if checkpoint.is_file():
-                _STORE.upload_file(job_id, checkpoint, remote_name="checkpoint.json")
+                if not _STORE.upload_file(job_id, checkpoint, remote_name="checkpoint.json"):
+                    _storage_failure(job_id, data, "checkpoint upload")
 
         # Upload reports before publishing the final durable 'done' status.
         if status == "done":
@@ -56,13 +71,18 @@ def set_job(job_id: str, **kwargs):
                 ("classic_xlsx_file", "PUMA_classic_analytical_report.xlsx"),
             ):
                 path = Path(str(data.get(key) or (legacy.JOBS_DIR / job_id / fallback)))
-                _STORE.upload_file(job_id, path, remote_name=path.name)
+                if not _STORE.upload_file(job_id, path, remote_name=path.name):
+                    _storage_failure(job_id, data, "report upload")
 
-        _STORE.save_status(
+        forced = status in {"queued", "done", "error", "interrupted", "cancelling", "cancelled"}
+        saved = _STORE.save_status(
             job_id,
             data,
-            force=status in {"queued", "done", "error", "interrupted", "cancelling", "cancelled"},
+            force=forced,
         )
+        if not saved and (forced or _STORE.last_error is not None):
+            _storage_failure(job_id, data, "status upload")
+    _original_set_job(job_id, **data)
 
 
 def get_job(job_id: str):

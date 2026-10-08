@@ -120,6 +120,10 @@ jobs:
               json.dumps(comparison,ensure_ascii=False,indent=2),encoding="utf-8"
           )
           print("PUMA13_COMPARISON="+json.dumps(comparison,ensure_ascii=False),flush=True)
+          if any(row["discovery_offers"] or row["refresh_offers"] for row in fp.values()):
+              raise SystemExit("RECOVERY13_FALSE_POSITIVE_DETECTED")
+          if source_gaps:
+              raise SystemExit("RECOVERY13_REFRESH_SOURCE_LOSS")
           PY
       - uses: actions/upload-artifact@v4
         if: always()
