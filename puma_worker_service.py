@@ -18,6 +18,22 @@ _STOP = threading.Event()
 _LAST_SYNC = {"at": 0.0, "seen": 0, "error": None}
 
 
+def health_payload():
+    synced = _LAST_SYNC["at"] > 0 and time.time() - _LAST_SYNC["at"] <= max(30.0, puma_worker._poll_seconds() * 3)
+    ready = bool(runtime._STORE.enabled and synced and not _LAST_SYNC["error"] and not _STOP.is_set())
+    return {
+        "ok": not _STOP.is_set(),
+        "ready": ready,
+        "service": "puma-worker",
+        "engine_build": legacy.ENGINE_BUILD,
+        "execution_mode": legacy._execution_mode(),
+        "durable_storage": ready,
+        "last_sync_at": _LAST_SYNC["at"],
+        "last_seen_jobs": _LAST_SYNC["seen"],
+        "last_error": _LAST_SYNC["error"],
+    }
+
+
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path != "/healthz":
@@ -25,19 +41,11 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        payload = {
-            "ok": True,
-            "ready": runtime._STORE.enabled,
-            "service": "puma-worker",
-            "engine_build": legacy.ENGINE_BUILD,
-            "execution_mode": legacy._execution_mode(),
-            "durable_storage": runtime._STORE.enabled,
-            "last_sync_at": _LAST_SYNC["at"],
-            "last_seen_jobs": _LAST_SYNC["seen"],
-            "last_error": _LAST_SYNC["error"],
-        }
+        payload = health_payload()
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(200)
+        # An unconfigured worker intentionally stays alive while waiting for
+        # secrets. A configured but unhealthy worker must fail readiness.
+        self.send_response(200 if payload["ready"] or not runtime._STORE.enabled else 503)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
@@ -51,12 +59,16 @@ class HealthHandler(BaseHTTPRequestHandler):
 def worker_loop():
     while not _STOP.is_set():
         try:
+            if not runtime._STORE.enabled:
+                _LAST_SYNC.update(at=0.0, seen=0, error="storage_not_configured")
+                _STOP.wait(puma_worker._poll_seconds())
+                continue
             seen = puma_worker.sync_once(runtime=runtime, legacy=legacy)
             _LAST_SYNC.update(at=time.time(), seen=seen, error=None)
         except Exception as exc:
             _LAST_SYNC.update(
                 at=time.time(),
-                error=f"{type(exc).__name__}: {exc}",
+                error=type(exc).__name__,
             )
             print(f"PUMA_WORKER_SYNC_ERROR {_LAST_SYNC['error']}", flush=True)
         _STOP.wait(puma_worker._poll_seconds())
@@ -86,7 +98,11 @@ def main() -> int:
     )
 
     try:
-        server.serve_forever(poll_interval=0.5)
+        # handle_request has a bounded timeout and observes our stop event;
+        # serve_forever would require shutdown from a different thread.
+        server.timeout = 0.5
+        while not _STOP.is_set():
+            server.handle_request()
     finally:
         _STOP.set()
         server.server_close()

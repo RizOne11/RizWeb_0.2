@@ -137,6 +137,8 @@ jobs:
               json.dumps(comparison,ensure_ascii=False,indent=2),encoding="utf-8"
           )
           print("PUMA1000_FINAL_COMPARISON="+json.dumps(comparison,ensure_ascii=False),flush=True)
+          if lost or source_gaps:
+              raise SystemExit("FULL1000_REFRESH_COVERAGE_LOSS")
           PY
 
       - uses: actions/upload-artifact@v4

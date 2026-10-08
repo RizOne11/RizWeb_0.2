@@ -27,7 +27,8 @@ The production engine:
 - reports min / median / average / max market prices;
 - keeps marketplace URLs and identity confidence;
 - supports checkpoint/resume for long-running jobs;
-- uses durable S3-compatible storage for job inputs, status, checkpoints and reports.
+- uses durable S3-compatible storage for job inputs, status, checkpoints and reports when all PUMA_S3_* settings are configured; otherwise storage is local and does not survive an ephemeral-container replacement;
+- refuses to publish queued/running/done transitions if required file uploads fail, and surfaces durable write failures as job errors.
 
 ## Production hardening
 
@@ -59,7 +60,20 @@ Background worker entrypoint prepared for split deployment:
 
     python puma_worker.py
 
-The live Render service currently remains in combined mode until a dedicated worker service is provisioned with the same durable-storage and provider secrets.
+For a Render web service running a worker with an HTTP health endpoint:
+
+    python puma_worker_service.py
+
+This wrapper stays idle without storage settings (HTTP 200, ready=false).
+Once configured, readiness requires a recent successful storage synchronization;
+storage synchronization failures return HTTP 503. This verifies list/read access,
+not write permissions; actual uploads are checked when job transitions occur.
+
+The checked-in render.yaml provisions only the combined web service. Split deployment
+requires a separately provisioned worker with the same durable-storage and provider
+secrets, PUMA_EXECUTION_MODE=worker on the worker and PUMA_EXECUTION_MODE=web on
+the web tier. The worker supports one active instance; multi-worker claiming is
+not implemented. Live Render settings must be verified independently.
 
 ## Tests and gates
 
@@ -73,6 +87,12 @@ Key gates include:
 - Full1000
 
 Post-production cleanup has its own regression gate and runs the full pytest suite.
+Production Hardening and Post Production Cleanup also run on pull requests to main.
+Recovery13, Mixed18 and Full1000 are explicit live checks (workflow_dispatch or
+their dedicated branch/path triggers), not automatic gates on every main push.
+Recovery13 rejects the locked false positives and refresh source loss; Full1000
+rejects refresh product/source loss. Mixed18 gates SKU query isolation and
+canonicalization; its market coverage is reported without a minimum threshold.
 
 ## Legacy
 
